@@ -37,8 +37,30 @@ class _BoundFPS:
         estado["pegadas_at"] = None
         self._svc.guardar(estado, self._pagina, self._subfolder, self._mat)
 
+    def quitar(self, path: Path) -> None:
+        """Quita la foto de la selección y renumera (#7)."""
+        estado = self.cargar()
+        estado = self._svc.deseleccionar(estado, path)
+        self._svc.guardar(estado, self._pagina, self._subfolder, self._mat)
+
+    def orden_map(self) -> dict:
+        """{path_str: orden 0-based} de las fotos seleccionadas."""
+        estado = self.cargar()
+        return {f["path"]: f.get("orden", 0) for f in estado.get("fotos", [])}
+
     def guardar(self) -> None:
         pass  # seleccionar() ya guarda; método presente para compatibilidad
+
+
+def _ordinal_es(n: int) -> str:
+    """1→'principal', 2→'segunda', 3→'tercera', … con fallback 'N-ésima'."""
+    if n <= 1:
+        return "principal"
+    nombres = {2: "segunda", 3: "tercera", 4: "cuarta", 5: "quinta", 6: "sexta",
+               7: "séptima", 8: "octava", 9: "novena", 10: "décima"}
+    return nombres.get(n, f"{n}-ésima")
+
+
 _THUMB_W = 120
 _THUMB_H = 90
 _PREVIEW_H   = 200   # altura fija del preview — no se expande
@@ -70,11 +92,15 @@ class _ThumbCard(QFrame):
     clicked        = pyqtSignal(Path)
     double_clicked = pyqtSignal(Path)
     set_principal_requested = pyqtSignal(Path)
+    establecer_orden_requested = pyqtSignal(Path)   # #7: agregar como siguiente orden
+    quitar_orden_requested     = pyqtSignal(Path)   # #7: quitar de la selección
     qr_solicitada           = pyqtSignal(Path)
 
     def __init__(self, img_path: Path, is_principal: bool = False, parent=None):
         super().__init__(parent)
         self.img_path = img_path
+        self._orden = 0 if is_principal else None   # orden 0-based o None si no seleccionada
+        self._total_sel = 0                          # cuántas fotos seleccionadas hay
         self.setFixedWidth(_THUMB_W + 8)
         self.setFrameShape(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
@@ -128,6 +154,21 @@ class _ThumbCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def set_orden_info(self, orden, total_sel: int):
+        """orden: 0-based o None; total_sel: cantidad de fotos ya seleccionadas."""
+        self._orden = orden
+        self._total_sel = int(total_sel)
+        es_principal = (orden == 0)
+        self.lbl_principal.setVisible(es_principal)
+        self.setProperty("principal", es_principal)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        if orden is not None and orden > 0:
+            self.lbl_principal.setText(f"📌 {_ordinal_es(orden + 1).capitalize()}")
+            self.lbl_principal.setVisible(True)
+        else:
+            self.lbl_principal.setText("📌 Principal")
+
     def set_qr(self, val: bool):
         self.lbl_qr.setVisible(val)
 
@@ -143,9 +184,21 @@ class _ThumbCard(QFrame):
 
     def _show_menu(self, pos):
         menu = QMenu(self)
-        act = QAction("Establecer como principal", self)
-        act.triggered.connect(lambda: self.set_principal_requested.emit(self.img_path))
-        menu.addAction(act)
+        if self._orden is None:
+            # No seleccionada → establecer en el siguiente orden disponible
+            etiqueta = ("Establecer como principal" if self._total_sel == 0
+                        else f"Establecer {_ordinal_es(self._total_sel + 1)}")
+            act = QAction(etiqueta, self)
+            act.triggered.connect(lambda: self.establecer_orden_requested.emit(self.img_path))
+            menu.addAction(act)
+        elif self._orden == 0:
+            act = QAction("Quitar como principal", self)
+            act.triggered.connect(lambda: self.quitar_orden_requested.emit(self.img_path))
+            menu.addAction(act)
+        else:
+            act = QAction(f"Quitar como {_ordinal_es(self._orden + 1)}", self)
+            act.triggered.connect(lambda: self.quitar_orden_requested.emit(self.img_path))
+            menu.addAction(act)
         act_qr = QAction("Marcar como QR", self)
         act_qr.triggered.connect(lambda: self.qr_solicitada.emit(self.img_path))
         menu.addAction(act_qr)
@@ -265,22 +318,26 @@ class FotosBrowser(QWidget):
         )
         self._lbl_no_fotos.setVisible(len(imgs) == 0)
 
-        principal_path: Path | None = None
+        orden_map: dict = {}
         if self._fps:
             try:
-                estado = self._fps.cargar()
-                for f in estado.get("fotos", []):
-                    if f.get("rol") == "principal":
-                        principal_path = Path(f["path"])
-                        break
+                orden_map = self._fps.orden_map()   # {path_str: orden 0-based}
             except Exception:
-                pass
+                orden_map = {}
+        total_sel = len(orden_map)
+
+        # Las fotos seleccionadas van primero por orden (principal=0); el resto por nombre. (#8b)
+        imgs.sort(key=lambda f: (orden_map.get(str(f), 9999), f.name))
 
         for img in imgs:
-            card = _ThumbCard(img, is_principal=(principal_path is not None and img == principal_path))
+            orden = orden_map.get(str(img))
+            card = _ThumbCard(img, is_principal=(orden == 0))
+            card.set_orden_info(orden, total_sel)
             card.clicked.connect(self._on_thumb_click)
             card.double_clicked.connect(self._on_thumb_double_click)
             card.set_principal_requested.connect(self._on_set_principal)
+            card.establecer_orden_requested.connect(self._on_establecer_orden)
+            card.quitar_orden_requested.connect(self._on_quitar_orden)
             card.qr_solicitada.connect(self._on_qr_solicitada)
             if self._qr_path is not None and img == self._qr_path:
                 card.set_qr(True)
@@ -326,6 +383,29 @@ class FotosBrowser(QWidget):
                 QMessageBox.warning(self, "Error", f"No se pudo guardar como principal:\n{e}")
         for card in self._cards:
             card.set_principal(card.img_path == path)
+
+    def _on_establecer_orden(self, path: Path):
+        """#7 — agrega la foto en el siguiente orden disponible (principal si es la primera)."""
+        if not self._fps:
+            return
+        try:
+            rol = "principal" if not self._fps.orden_map() else "secundaria"
+            self._fps.seleccionar(path, rol=rol)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo establecer la foto:\n{e}")
+            return
+        self.reload(self._dir)   # refresca órdenes/etiquetas de todas las tarjetas
+
+    def _on_quitar_orden(self, path: Path):
+        """#7 — quita la foto de la selección y renumera el resto."""
+        if not self._fps:
+            return
+        try:
+            self._fps.quitar(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo quitar la foto:\n{e}")
+            return
+        self.reload(self._dir)
 
     def _on_qr_solicitada(self, path: Path):
         if self._qr_path == path:

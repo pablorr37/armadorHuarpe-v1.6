@@ -973,6 +973,33 @@ class ArmadorController:
         #self.file_service.migrate_ini_schema() # DEPRECADO PORQUE YA NO SE USA INI CENTRAL
         return info
 
+    def cargar_edicion(self, base_dir):
+        """Carga una edición EXISTENTE como base activa (sin crear una nueva).
+        Apunta quark_output_dir a la carpeta elegida; el material se deriva como
+        <edición>/materiales en _sincronizar_rutas_en_file_service."""
+        from pathlib import Path as _Path
+        import re as _re
+        base_dir = _Path(base_dir)
+        if not base_dir.exists():
+            raise FileNotFoundError(f"No existe la edición:\n{base_dir}")
+        self.rutas.quark_output_dir = base_dir
+        # Derivar carpetas PDF desde la fecha del nombre de la edición (best-effort).
+        try:
+            meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO",
+                     "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"]
+            m = _re.search(r"(\d{1,2})\s+DE\s+([A-ZÁÉÍÓÚ]+)\s+DE\s+(\d{4})", base_dir.name.upper())
+            if m and getattr(self.rutas, "pdf_root", None):
+                dia = int(m.group(1)); mes_str = m.group(2)
+                if mes_str in meses:
+                    mes_idx = meses.index(mes_str) + 1
+                    pdf_day = _Path(self.rutas.pdf_root) / mes_str / f"{dia}-{mes_idx}"
+                    self.rutas.pdf_output_dir = pdf_day
+                    self.rutas.pdf_ok_dir = pdf_day / "OK"
+        except Exception:
+            pass
+        self._sincronizar_rutas_en_file_service()
+        return {"base_dir": base_dir}
+
     # ---------- Verificaciones ----------
     def archivo_asociado_a_estado(self, numero: int) -> Optional[Path]:
         """

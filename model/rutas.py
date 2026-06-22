@@ -257,6 +257,9 @@ class RutasEstado:
                 "seccion": "",
                 "estado": "",
                 "maqueta": "",
+                "historial_by": "",
+                "historial_ts": "",
+                "historial_accion": "",
             }
 
             for n in range(1, 17):

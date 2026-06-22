@@ -70,6 +70,48 @@ document.getElementById('seccion').addEventListener('change', function() {
 
 loadSecciones();
 
+// ── Sección por página (la define Python) ────────────────────
+// Cuando el usuario coloca la página, autoselecciona la sección configurada en
+// Python (paginas_secciones.json). Si la página no tiene sección, queda la
+// elección manual del usuario.
+function loadPaginaSeccion() {
+  var pag = parseInt(document.getElementById('pagina').value, 10);
+  if (!pag) return;
+  chrome.downloads.search({ orderBy: ['-startTime'], limit: 50 }, function(items) {
+    var match = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].filename && /armadorhuarpe/i.test(items[i].filename)) { match = items[i]; break; }
+    }
+    if (!match) return;
+    var normalized = match.filename.replace(/\\/g, '/');
+    var m = normalized.match(/^(.+?armadorhuarpe\/)/i);
+    if (!m) return;
+    var url = 'file:///' + m[1].replace(/^\//, '') + 'paginas_secciones.json';
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var mapa = (d && d.paginas) || {};
+        var sec = mapa[String(pag)];
+        if (!sec) return;
+        var sel = document.getElementById('seccion');
+        var found = false;
+        for (var i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === sec) { sel.value = sec; found = true; break; }
+        }
+        if (!found) {
+          var opt = document.createElement('option');
+          opt.value = sec; opt.textContent = sec;
+          sel.insertBefore(opt, sel.options[1] || null);
+          sel.value = sec;
+        }
+        document.getElementById('seccionManual').classList.add('hidden');
+      })
+      .catch(function() {});
+  });
+}
+document.getElementById('pagina').addEventListener('change', loadPaginaSeccion);
+document.getElementById('pagina').addEventListener('input', loadPaginaSeccion);
+
 // ── Toggle de rol (Principal / Secundaria / Otra) ────────────
 Array.prototype.forEach.call(document.querySelectorAll('.role-btn'), function(btn) {
   btn.addEventListener('click', function() {

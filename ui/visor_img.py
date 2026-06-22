@@ -211,6 +211,7 @@ class VisorPanelWidget(QWidget):
     imagen_eliminada           = pyqtSignal(Path)
     imagen_renombrada          = pyqtSignal(Path, str)
     abrir_en_editor_solicitado = pyqtSignal(Path)
+    qr_link_solicitado         = pyqtSignal(str)   # #11: pedir generar un QR desde un link
 
     # Señales para selección de fotos de página
     foto_seleccionar   = pyqtSignal(Path)   # pedir agregar imagen a la lista de la página
@@ -297,6 +298,10 @@ class VisorPanelWidget(QWidget):
             QPixmap(resource_path("ui/assets/color.png")), "Editar foto")
         self.btn_editar_foto.clicked.connect(self._on_editar_foto_clicked)
 
+        self.btn_qr = CircleIconButton(
+            QPixmap(resource_path("ui/assets/qr.png")), "Generar QR")
+        self.btn_qr.clicked.connect(self._on_qr_clicked)
+
         self._aplicar_estilo_estrella(False)
         self._aplicar_estilo_seleccionar(False)
 
@@ -306,6 +311,7 @@ class VisorPanelWidget(QWidget):
         iconos.addWidget(self.btn_seleccionar)
         iconos.addWidget(self.btn_foto_tapa)
         iconos.addWidget(self.btn_editar_foto)
+        iconos.addWidget(self.btn_qr)
         iconos.addStretch()
         layout.addLayout(iconos)
 
@@ -518,6 +524,13 @@ class VisorPanelWidget(QWidget):
         img = self.imagen_actual()
         if img:
             self.abrir_en_editor_solicitado.emit(img)
+
+    def _on_qr_clicked(self) -> None:
+        """#11 — pide un link y solicita generar un QR para la página actual."""
+        from PyQt5.QtWidgets import QInputDialog
+        url, ok = QInputDialog.getText(self, "Generar QR", "Pegá el link del QR:")
+        if ok and url and url.strip():
+            self.qr_link_solicitado.emit(url.strip())
 
     def _actualizar_botones_foto(self) -> None:
         """Habilita/deshabilita (gris) los 3 íconos según si hay imagen visible."""

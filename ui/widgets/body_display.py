@@ -52,14 +52,19 @@ def extract_settings(mq: dict) -> dict:
 
 def body_qss(settings: dict, state: str | None = None) -> str:
     # La fuente (familia/tamaño) la fija setFont en apply_body_display (fuente
-    # única de verdad, así fontMetrics queda correcto). Acá solo color/borde.
+    # La fuente va TAMBIÉN en el QSS: el QPlainTextEdit repinta de inmediato al
+    # cambiar font-size por stylesheet (setFont solo no siempre fuerza el relayout).
     bg = settings.get("cuerpo_bg_color", DEFAULTS["cuerpo_bg_color"])
     fg = settings.get("cuerpo_text_color", DEFAULTS["cuerpo_text_color"])
+    fam = settings.get("cuerpo_font_family", DEFAULTS["cuerpo_font_family"])
+    size = int(settings.get("cuerpo_font_size", DEFAULTS["cuerpo_font_size"]))
     border = _STATE_BORDER.get(state, _NEUTRAL_BORDER)
     return (
         "QPlainTextEdit {"
         f" background: {bg};"
         f" color: {fg};"
+        f" font-family: '{fam}';"
+        f" font-size: {size}px;"
         f" border: 2px solid {border};"
         " border-radius: 8px;"
         " padding: 10px;"
@@ -99,6 +104,7 @@ def apply_body_display(editor, settings: dict, state: str | None = None) -> None
     editor.setFont(f)
     editor.setStyleSheet(body_qss(settings, state))
     apply_line_spacing(editor, int(settings.get("cuerpo_line_spacing", DEFAULTS["cuerpo_line_spacing"])))
+    editor.viewport().update()   # fuerza repaint inmediato (tiempo real)
 
 
 class BodyDisplayToolbar(QWidget):

@@ -19,22 +19,19 @@ from utils.app_logger import get_logger
 
 _log = get_logger(__name__)
 
-# --- papelera vs. borrado definitivo ---
-def send2trash(path):
-        """
-        Fallback: pregunta si eliminar permanentemente
-        (si no está disponible send2trash).
-        """
-        resp = QMessageBox.question(
-            None,
-            "Eliminar archivo",
-            f"El archivo no se puede enviar a la papelera:\n\n{path}\n\n"
-            "¿Querés eliminarlo permanentemente?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if resp == QMessageBox.Yes:
-            os.remove(path)
+# --- borrado definitivo (sin papelera) ---
+def _eliminar_definitivo(path):
+    """Borra definitivamente un archivo o carpeta (sin papelera).
+
+    La confirmación ('advertencia previa') se hace en la capa UI antes de
+    invocar el borrado; acá solo se ejecuta."""
+    p = Path(path)
+    if not p.exists():
+        return
+    if p.is_dir():
+        shutil.rmtree(p)
+    else:
+        os.remove(p)
 
 
 
@@ -204,6 +201,10 @@ DEFAULT_PAGE_FIELDS = {
     "seccion": "",
     "estado": "",
     "maqueta": "",
+    # Historial de trabajo (#1): se appendea una entrada por cada acción, ';'-separado.
+    "historial_by": "",
+    "historial_ts": "",
+    "historial_accion": "",
 }
 
 
@@ -657,9 +658,9 @@ class FileService:
         if not p.exists():
             raise FileServiceError(f"No se encontró el PDF a descartar:\n{p}")
         try:
-            send2trash(str(p))
+            _eliminar_definitivo(p)
         except Exception as e:
-            raise FileServiceError(f"No se pudo enviar a la papelera el PDF:\n{p}", e)
+            raise FileServiceError(f"No se pudo eliminar el PDF:\n{p}", e)
 
 
     def set_rutas(self, rutas: Dict[str, str]) -> None:
@@ -1365,6 +1366,9 @@ class FileService:
             "seccion": cfg[sec].get("seccion", "").strip(),
             "estado": cfg[sec].get("estado", "").strip().lower(),
             "maqueta": cfg[sec].get("maqueta", "").strip(),
+            "historial_by": cfg[sec].get("historial_by", "").strip(),
+            "historial_ts": cfg[sec].get("historial_ts", "").strip(),
+            "historial_accion": cfg[sec].get("historial_accion", "").strip(),
         }
 
     def write_page_entry(self, numero: int, **campos):
@@ -1435,6 +1439,24 @@ class FileService:
         # Guardar
         self._save_ini_atomic_to(ini_path, cfg)
 
+    def registrar_trabajo(self, numero: int, usuario: str, accion: str) -> None:
+        """#1 — Appendea una entrada de historial (usuario|fecha|acción) a las claves
+        historial_*, ';'-separadas. NO toca by/ts/estado (no cambia el color)."""
+        usuario = (usuario or "?").strip()
+        accion = (accion or "").strip()
+        ts = datetime.datetime.now().isoformat(timespec="seconds")
+        entry = self.read_page_entry(numero)
+        def _append(prev: str, val: str) -> str:
+            prev = (prev or "").strip()
+            return f"{prev};{val}" if prev else val
+        self.write_page_entry(
+            numero,
+            historial_by=_append(entry.get("historial_by", ""), usuario),
+            historial_ts=_append(entry.get("historial_ts", ""), ts),
+            historial_accion=_append(entry.get("historial_accion", ""), accion),
+            ts=entry.get("ts"),   # preservar ts del dueño (no autogenerar)
+        )
+
     def _convert_ini_to_dict(self, mapping: dict) -> dict:
         """
         Convierte el DEFAULT_PAGE_FIELDS a tipos adecuados
@@ -1456,6 +1478,9 @@ class FileService:
             "link": mapping.get("link", ""),
             "seccion": mapping.get("seccion", ""),
             "estado": mapping.get("estado", ""),
+            "historial_by": mapping.get("historial_by", ""),
+            "historial_ts": mapping.get("historial_ts", ""),
+            "historial_accion": mapping.get("historial_accion", ""),
         }
 
 
@@ -2881,12 +2906,35 @@ class FileService:
         # ---------------------------
 
         try:
-            # 1. PERSONAL o MATERIALES/Pnn → BASE = COPIAR
+            # 1. PERSONAL o MATERIALES/Pnn → BASE = COPIAR (dejar el qxp en materiales)
             mat_root = Path(self.rutas.get("material") or "")
-            src_in_proceso = (
-                (personal and personal in src_resolved.parents) or
-                (mat_root and mat_root in src_resolved.parents)
-            )
+
+            def _under(root: Path, child: Path) -> bool:
+                """True si child está dentro de root, tolerante a rutas mapeadas/UNC
+                (compara formas resueltas y sin resolver: en discos de red .resolve()
+                puede canonizar a UNC y no coincidir con la raíz mapeada)."""
+                if not root or str(root) in ("", "."):
+                    return False
+                roots = {root}
+                childs = {Path(child)}
+                try:
+                    roots.add(root.resolve())
+                except Exception:
+                    pass
+                try:
+                    childs.add(Path(child).resolve())
+                except Exception:
+                    pass
+                for r in roots:
+                    for c in childs:
+                        try:
+                            if r == c or r in c.parents:
+                                return True
+                        except Exception:
+                            pass
+                return False
+
+            src_in_proceso = _under(mat_root, src) or _under(personal, src)
             if src_in_proceso:
                 _copy_file(src, dest, overwrite=True)
 
@@ -3194,9 +3242,9 @@ class FileService:
         if not qxp:
             raise FileServiceError(f"No hay QXP en materiales para P{numero:02d}")
         try:
-            send2trash(str(qxp))
+            _eliminar_definitivo(qxp)
         except Exception as e:
-            raise FileServiceError(f"No se pudo enviar a la papelera el QXP:\n{qxp}", e)
+            raise FileServiceError(f"No se pudo eliminar el QXP:\n{qxp}", e)
 
     # ------------------------------------------------------------------
     # QXP: detección de lock + borrado en TODAS las ubicaciones
@@ -3283,7 +3331,7 @@ class FileService:
         borrados = 0
         for q in qxps:
             try:
-                send2trash(str(q))
+                _eliminar_definitivo(q)
                 borrados += 1
                 _log.info("QXP descartado P%02d: %s", numero, q)
             except Exception as e:
@@ -3322,7 +3370,7 @@ class FileService:
         borrados = 0
         for q in objetivo:
             try:
-                send2trash(str(q))
+                _eliminar_definitivo(q)
                 borrados += 1
                 _log.info("QXP descartado (fuera de materiales) P%02d: %s", numero, q)
             except Exception as e:
