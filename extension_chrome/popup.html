@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Armador Huarpe</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+
+    <div class="header">
+      <span class="logo">&#11042;</span>
+      <div class="header-text">
+        <span class="title">Armador Huarpe</span>
+        <span class="subtitle">Descarga de materiales</span>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label for="pagina">Página</label>
+      <input type="number" id="pagina" min="1" max="16" placeholder="Ej: 8" autocomplete="off" />
+    </div>
+
+    <div class="field-group">
+      <label>Rol de la noticia</label>
+      <div class="role-toggle">
+        <button type="button" class="role-btn active" data-rol="principal">Principal</button>
+        <button type="button" class="role-btn" data-rol="secundaria">Secundaria</button>
+        <button type="button" class="role-btn" data-rol="otra">Otra</button>
+      </div>
+      <input type="number" id="rolOtra" min="3" value="3" class="hidden" />
+    </div>
+
+    <div class="field-group">
+      <label for="seccion">Sección</label>
+      <select id="seccion">
+        <option value="">— Sin sección —</option>
+      </select>
+      <input type="text" id="seccionManual" placeholder="Escribí la sección..." class="hidden" />
+    </div>
+
+    <button id="descargarBtn">Descargar materiales</button>
+
+    <div id="progreso" class="progreso hidden"></div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

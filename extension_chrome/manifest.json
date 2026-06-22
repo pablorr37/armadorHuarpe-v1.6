@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Copiar nota Diario Huarpe",
+  "version": "1.2",
+  "description": "Extrae campos de la nota (volanta, título, bajada, firma, cuerpo, epígrafe) y descarga imágenes.",
+  "permissions": [
+    "scripting",
+    "downloads",
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://manager.diariohuarpe.com/*",
+    "https://*.diariohuarpe.com/*",
+    "https://pxbcdn.diariohuarpe.com/*",
+    "file:///*"
+  ],
+  "icons": {"16": "guanaco.png", "48": "guanaco.png", "128": "guanaco.png"},
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "guanaco.png"
+  }
+}

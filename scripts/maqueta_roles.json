@@ -1,0 +1,111 @@
+{
+  "_comentario": "Mapping de box-name a rol editorial, extraído de PegarNota.js. Usado por maqueta_reader_service.py para cruzar con maqueta_info.json.",
+  "default": {
+    "variantes": [
+      {"volanta": "Box372",  "titulo": "Box371",  "cuerpo": "Box373"},
+      {"volanta": "Box507",  "titulo": "Box506",  "cuerpo": "Box508"},
+      {"volanta": "Box1870", "titulo": "Box1868", "cuerpo": "Box1871"}
+    ],
+    "epigrafe": "Box1878",
+    "default_limits": {
+      "volanta_limit": 85,
+      "epigrafe_principal_limit": 115
+    },
+    "story_scenarios": {
+      "1": [
+        {
+          "story_index": 0, "titulo_lineas": 2,
+          "pages": [{"volanta":"Box372","titulo":"Box371","cuerpo":"Box373","epigrafe":"Box368"}]
+        }
+      ],
+      "2": [
+        {
+          "story_index": 0, "titulo_lineas": 2,
+          "pages": [
+            {"volanta":"Box507", "titulo":"Box506", "cuerpo":"Box508", "epigrafe":"Box504"},
+            {"volanta":"Box1870","titulo":"Box1868","cuerpo":"Box1871","epigrafe":"Box1866"}
+          ]
+        },
+        {
+          "story_index": 1,
+          "story_types": {
+            "secundaria": {
+              "titulo_lineas": 1, "titulo_chars_linea": 48,
+              "sin_bajada": true, "sin_epigrafe": true,
+              "pages": [
+                {"volanta":"Box511","titulo":"Box499","cuerpo":"Box500"}
+              ]
+            },
+            "breve": {
+              "titulo_lineas": 3, "titulo_chars_linea": 21,
+              "sin_bajada": true, "sin_epigrafe": true,
+              "pages": [
+                {"volanta":"Box1875","titulo":"Box1873","cuerpo":"Box1876"}
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "cultura": {
+    "variantes": [
+      {"volanta": "Box1286", "titulo": "Box1289", "cuerpo": "Box1290", "epigrafe": "Box1287"},
+      {"volanta": "Box1382", "titulo": "Box1381", "cuerpo": "Box1376"},
+      {"volanta": "Box1321", "titulo": "Box1324", "cuerpo": "Box1325", "epigrafe": "Box1322"}
+    ],
+    "epigrafe": "Box1474",
+    "default_limits": {
+      "volanta_limit": 85,
+      "epigrafe_principal_limit": 115
+    }
+  },
+  "deportes": {
+    "variantes": [
+      {"volanta": "Box751",  "titulo": "Box541",  "cuerpo": "Box545"},
+      {"volanta": "Box911",  "titulo": "Box908",  "cuerpo": "Box910"},
+      {"volanta": "Box830",  "titulo": "Box825",  "cuerpo": "Box827"}
+    ],
+    "epigrafe": "Box1643",
+    "default_limits": {
+      "volanta_limit": 85,
+      "epigrafe_principal_limit": 115
+    }
+  },
+  "economia": {
+    "variantes": [
+      {"volanta": "Box873",  "titulo": "Box872",  "cuerpo": "Box871"},
+      {"volanta": "Box1913", "titulo": "Box1912", "cuerpo": "Box1914"},
+      {"volanta": "Box1896", "titulo": "Box1894", "cuerpo": "Box1897"},
+      {"volanta": "Box1888", "titulo": "Box1887", "cuerpo": "Box1889"}
+    ],
+    "epigrafe": "Box1919",
+    "default_limits": {
+      "volanta_limit": 85,
+      "epigrafe_principal_limit": 115
+    }
+  },
+  "cafe de la politica": {
+    "variantes": [
+      {"volanta": "Box1850", "titulo": "Box1849", "cuerpo": "Box1851"},
+      {"volanta": "Box1923", "titulo": "Box1922", "cuerpo": "Box1927"},
+      {"volanta": "Box1942", "titulo": "Box1941", "cuerpo": "Box1946"}
+    ],
+    "epigrafe": "Box2068",
+    "textuales": ["Box1866", "Box1867"],
+    "default_limits": {
+      "volanta_limit": 85,
+      "epigrafe_principal_limit": 115
+    }
+  },
+  "eco huarpe": {
+    "variantes": [
+      {"volanta": "Box6587", "titulo": "Box6582", "cuerpo": "Box6584"}
+    ],
+    "epigrafe": "Box6706",
+    "default_limits": {
+      "volanta_limit": 85,
+      "epigrafe_principal_limit": 115
+    }
+  }
+}
