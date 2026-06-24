@@ -29,7 +29,8 @@ class CircleIconButton(QWidget):
     clicked = pyqtSignal()
 
     def __init__(self, pixmap: QPixmap, titulo: str, valor: str = None,
-                 icon_px: int = 30, reservar_valor: bool = False, parent=None):
+                 icon_px: int = 30, reservar_valor: bool = False,
+                 label_w: int = None, parent=None):
         super().__init__(parent)
         self._pm = pixmap
         self._icon_px = max(16, int(icon_px))
@@ -39,7 +40,7 @@ class CircleIconButton(QWidget):
         self._btn_px = self._icon_px + 12
 
         v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(2, 2, 2, 2)
         v.setSpacing(2)
 
         # parent=self desde la creación: evita que setVisible(True) muestre un
@@ -53,6 +54,10 @@ class CircleIconButton(QWidget):
         self._lbl = QLabel(titulo, self)
         self._lbl.setAlignment(Qt.AlignCenter)
         self._lbl.setWordWrap(True)
+        if label_w:
+            # Ancho fijo → todos los íconos quedan del mismo ancho y el word-wrap
+            # reparte el texto en líneas, dejándolos alineados/equidistantes.
+            self._lbl.setFixedWidth(int(label_w))
 
         self._val = QLabel(valor or "", self)
         self._val.setAlignment(Qt.AlignCenter)
@@ -68,6 +73,8 @@ class CircleIconButton(QWidget):
 
     # ── estilos ───────────────────────────────────────────────
     def _aplicar_estilos(self):
+        # Mismo diseño que el menú radial: sin borde; hover/seleccionado = RELLENO
+        # naranja (#e7885f). Seleccionado = relleno naranja persistente.
         r = self._btn_px // 2
         if not self._enabled:
             self._btn.setStyleSheet(
@@ -76,8 +83,7 @@ class CircleIconButton(QWidget):
             self._btn.setCursor(Qt.ArrowCursor)
         elif self._activo:
             self._btn.setStyleSheet(
-                "QPushButton{border:2px solid #e7885f;border-radius:%dpx;"
-                "background:rgba(231,136,95,0.30);}"
+                "QPushButton{border:none;border-radius:%dpx;background:#e7885f;}"
                 "QPushButton:hover{background:#e7885f;}" % r)
             self._btn.setCursor(Qt.PointingHandCursor)
         else:
@@ -106,9 +112,13 @@ class CircleIconButton(QWidget):
             return
         self._activo = activo
         self._aplicar_estilos()
+        self.update()
 
     def set_titulo(self, titulo: str):
         self._lbl.setText(titulo or "")
+
+    def titulo(self) -> str:
+        return self._lbl.text()
 
     def set_valor(self, valor: str):
         self._val.setText(valor or "")

@@ -49,8 +49,13 @@ class VerticalTabButton(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
 
-        # Fondo (hover naranja, estilo radial)
-        bg = QColor("#e7885f") if self._hover else QColor(30, 41, 59)
+        # Fondo: hover naranja pleno; seleccionado (expandido) naranja al 80%; si no, oscuro.
+        if self._hover:
+            bg = QColor("#e7885f")
+        elif self._expandido:
+            bg = QColor(231, 136, 95, 204)   # naranja 80% → resalta la solapa activa
+        else:
+            bg = QColor(30, 41, 59)
         p.setBrush(bg)
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(0, 0, w, h, 6, 6)
@@ -58,7 +63,7 @@ class VerticalTabButton(QWidget):
         # Texto vertical de abajo hacia arriba
         flecha = "«" if self._expandido else "»"
         texto = f"{flecha}  {self._texto}"
-        p.setPen(QColor("#ffffff") if self._hover else QColor("#e2e8f0"))
+        p.setPen(QColor("#ffffff") if (self._hover or self._expandido) else QColor("#e2e8f0"))
         f = QFont()
         f.setPointSize(9)
         f.setBold(True)

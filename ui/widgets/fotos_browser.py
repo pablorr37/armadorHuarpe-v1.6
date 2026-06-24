@@ -22,14 +22,11 @@ class _BoundFPS:
     def cargar(self) -> dict:
         return self._svc.cargar(self._pagina, self._subfolder, self._mat)
 
-    def seleccionar(self, path: Path, rol: str = "principal") -> None:
-        estado = self.cargar()
-        path_str = str(path)
-        fotos = [f for f in estado.get("fotos", []) if f["path"] != path_str]
-        if rol == "principal":
-            fotos.insert(0, {"path": path_str, "nombre": path.name, "orden": 0, "rol": "principal"})
-        else:
-            fotos.append({"path": path_str, "nombre": path.name, "orden": len(fotos), "rol": "secundaria"})
+    @staticmethod
+    def _nombre(p) -> str:
+        return Path(p).name
+
+    def _renumerar_y_guardar(self, estado: dict, fotos: list) -> None:
         for i, f in enumerate(fotos):
             f["orden"] = i
             f["rol"] = "principal" if i == 0 else "secundaria"
@@ -37,16 +34,44 @@ class _BoundFPS:
         estado["pegadas_at"] = None
         self._svc.guardar(estado, self._pagina, self._subfolder, self._mat)
 
-    def quitar(self, path: Path) -> None:
-        """Quita la foto de la selección y renumera (#7)."""
+    def seleccionar(self, path: Path, rol: str = "principal") -> None:
+        # Dedupe por NOMBRE de archivo (no por path completo): el visor y el editor
+        # pueden guardar el mismo archivo con formas de path distintas.
         estado = self.cargar()
-        estado = self._svc.deseleccionar(estado, path)
-        self._svc.guardar(estado, self._pagina, self._subfolder, self._mat)
+        nombre = self._nombre(path)
+        fotos = [f for f in estado.get("fotos", []) if self._nombre(f["path"]) != nombre]
+        nuevo = {"path": str(path), "nombre": path.name, "orden": 0, "rol": "principal"}
+        if rol == "principal":
+            fotos.insert(0, nuevo)
+        else:
+            fotos.append(nuevo)
+        self._renumerar_y_guardar(estado, fotos)
+
+    def quitar(self, path: Path) -> None:
+        """Quita la foto de la selección (match por nombre) y renumera (#7)."""
+        estado = self.cargar()
+        nombre = self._nombre(path)
+        fotos = [f for f in estado.get("fotos", []) if self._nombre(f["path"]) != nombre]
+        self._renumerar_y_guardar(estado, fotos)
+
+    def sincronizar(self, nombres_presentes: set) -> dict:
+        """Poda fotos cuyo archivo ya no está entre las imágenes presentes
+        (match por nombre), renumera y guarda si cambió. Devuelve {nombre: orden}."""
+        estado = self.cargar()
+        fotos = estado.get("fotos", [])
+        validas = [f for f in fotos if self._nombre(f["path"]) in nombres_presentes]
+        validas.sort(key=lambda f: f.get("orden", 0))
+        if len(validas) != len(fotos):
+            self._renumerar_y_guardar(estado, validas)
+        else:
+            for i, f in enumerate(validas):
+                f["orden"] = i
+        return {self._nombre(f["path"]): f["orden"] for f in validas}
 
     def orden_map(self) -> dict:
-        """{path_str: orden 0-based} de las fotos seleccionadas."""
+        """{nombre: orden 0-based} de las fotos seleccionadas (match por nombre)."""
         estado = self.cargar()
-        return {f["path"]: f.get("orden", 0) for f in estado.get("fotos", [])}
+        return {self._nombre(f["path"]): f.get("orden", 0) for f in estado.get("fotos", [])}
 
     def guardar(self) -> None:
         pass  # seleccionar() ya guarda; método presente para compatibilidad
@@ -318,19 +343,19 @@ class FotosBrowser(QWidget):
         )
         self._lbl_no_fotos.setVisible(len(imgs) == 0)
 
-        orden_map: dict = {}
+        orden_map: dict = {}   # nombre -> orden (match por nombre, sin fantasmas)
         if self._fps:
             try:
-                orden_map = self._fps.orden_map()   # {path_str: orden 0-based}
+                orden_map = self._fps.sincronizar({img.name for img in imgs})
             except Exception:
                 orden_map = {}
         total_sel = len(orden_map)
 
         # Las fotos seleccionadas van primero por orden (principal=0); el resto por nombre. (#8b)
-        imgs.sort(key=lambda f: (orden_map.get(str(f), 9999), f.name))
+        imgs.sort(key=lambda f: (orden_map.get(f.name, 9999), f.name))
 
         for img in imgs:
-            orden = orden_map.get(str(img))
+            orden = orden_map.get(img.name)
             card = _ThumbCard(img, is_principal=(orden == 0))
             card.set_orden_info(orden, total_sel)
             card.clicked.connect(self._on_thumb_click)

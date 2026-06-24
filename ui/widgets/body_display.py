@@ -59,8 +59,9 @@ def body_qss(settings: dict, state: str | None = None) -> str:
     fam = settings.get("cuerpo_font_family", DEFAULTS["cuerpo_font_family"])
     size = int(settings.get("cuerpo_font_size", DEFAULTS["cuerpo_font_size"]))
     border = _STATE_BORDER.get(state, _NEUTRAL_BORDER)
+    # El cuerpo es un QTextEdit (para que el interlineado funcione).
     return (
-        "QPlainTextEdit {"
+        "QTextEdit {"
         f" background: {bg};"
         f" color: {fg};"
         f" font-family: '{fam}';"

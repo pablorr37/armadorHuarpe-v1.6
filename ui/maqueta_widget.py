@@ -494,10 +494,13 @@ class MaquetaWidget(QWidget):
     # Mini-maqueta (para PageButton)
     # --------------------------------------------------------
     @staticmethod
-    def draw_static(painter, pagina, rect, controller=None):
+    def draw_static(painter, pagina, rect, controller=None, mostrar_aviso=True):
         """
         Render estático (sin I/O pesado) de la maqueta o aviso.
         Usado por los botones de página.
+
+        mostrar_aviso=False oculta SOLO la previsualización (la imagen del aviso),
+        preservando el dibujo de la maqueta (la zona naranja del aviso).
         """
         if not pagina:
             return
@@ -531,9 +534,11 @@ class MaquetaWidget(QWidget):
                 area_aviso = QRectF(rect.left() + ancho, rect.top(), ancho, rect.height())
 
         # === Si hay aviso real, dibujarlo ===
+        # SOLO si hay un área de aviso (flags activos). Esto evita que un pixmap
+        # cacheado de otra edición (flags apagados) se dibuje a página completa.
         pixmap = getattr(pagina, "aviso_pixmap", None)
-        if pixmap and not pixmap.isNull():
-            target = area_aviso or rect
+        if mostrar_aviso and pixmap and not pixmap.isNull() and area_aviso is not None:
+            target = area_aviso
 
             # 🔹 Margen mínimo y uniforme
             margin = target.width() * 0.025

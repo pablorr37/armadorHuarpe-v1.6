@@ -181,6 +181,55 @@ class Config:
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 
+    def export_maqueta_limits(self) -> dict:
+        """Exporta los LÍMITES de maqueta realmente almacenados en config.ini para
+        compartir entre estaciones: `[MAQUETA]` (excluyendo el tema de visualización
+        local) → 'global', y cada `[MAQUETA:<nombre>]` → 'por_maqueta[nombre]'.
+        Devuelve solo lo guardado (no los defaults)."""
+        from services.shared_config_service import MAQUETA_LOCAL_KEYS
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        global_limits = {}
+        if cfg.has_section("MAQUETA"):
+            for k, v in cfg["MAQUETA"].items():
+                if k not in MAQUETA_LOCAL_KEYS:
+                    global_limits[k] = v
+        por_maqueta = {}
+        for sec in cfg.sections():
+            if sec.startswith("MAQUETA:"):
+                nombre = sec[len("MAQUETA:"):]
+                por_maqueta[nombre] = {k: v for k, v in cfg[sec].items()}
+        return {"global": global_limits, "por_maqueta": por_maqueta}
+
+    def apply_maqueta_limits(self, data: dict) -> None:
+        """Aplica los LÍMITES compartidos a config.ini en un único read-modify-write
+        atómico. Preserva las claves locales de tema en `[MAQUETA]`; reescribe cada
+        `[MAQUETA:<nombre>]` con los overrides compartidos."""
+        from services.shared_config_service import MAQUETA_LOCAL_KEYS
+        data = data or {}
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+
+        global_limits = data.get("global") or {}
+        if global_limits:
+            if "MAQUETA" not in cfg:
+                cfg["MAQUETA"] = {}
+            # Solo límites; nunca tocar las claves locales de tema.
+            for k, v in global_limits.items():
+                if k not in MAQUETA_LOCAL_KEYS:
+                    cfg["MAQUETA"][k] = str(v)
+
+        por_maqueta = data.get("por_maqueta") or {}
+        for nombre, limites in por_maqueta.items():
+            sec = f"MAQUETA:{nombre}"
+            if sec not in cfg:
+                cfg[sec] = {}
+            for k, v in (limites or {}).items():
+                cfg[sec][k] = str(v)
+
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
     def get_story_type(
         self, maqueta: str, seccion: str, story_count: int, story_index: int
     ) -> str:

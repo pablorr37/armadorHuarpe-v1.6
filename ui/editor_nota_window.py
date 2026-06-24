@@ -695,6 +695,7 @@ class _ToastNotification(QWidget):
 class EditorNotaWindow(QMainWindow):
     nota_guardada = pyqtSignal(int)
     nota_guardada_para_armar = pyqtSignal(int)
+    maqueta_limits_guardados = pyqtSignal()   # límites de maqueta editados → publicar a estaciones
 
     def __init__(
         self,
@@ -1815,13 +1816,16 @@ class EditorNotaWindow(QMainWindow):
             self._arrow_overlay.hide()
             return
         try:
-            block_rect = editor.blockBoundingGeometry(block).translated(editor.contentOffset())
+            # cursorRect funciona en QTextEdit (blockBoundingGeometry es solo de QPlainTextEdit).
+            cur = QTextCursor(doc)
+            cur.setPosition(start)
+            crect = editor.cursorRect(cur)
         except Exception:
             self._arrow_overlay.hide()
             return
         viewport_h = editor.viewport().rect().height()
-        top_y = block_rect.top()
-        bottom_y = block_rect.bottom()
+        top_y = crect.top()
+        bottom_y = crect.bottom()
         if bottom_y < 0:
             self._arrow_overlay.direction = "up"
             self._arrow_overlay._reposition()
@@ -1867,14 +1871,20 @@ class EditorNotaWindow(QMainWindow):
         self._sel_textual_row.setVisible(on)
         if not self._stories:
             return
-        editor = self._stories[0].ed_cuerpo
+        panel = self._stories[0]
         if on:
-            editor.setStyleSheet(
-                "QPlainTextEdit { border: 2px solid rgba(100,180,255,0.7);"
-                " background: rgba(100,180,255,0.04); }"
+            # Mantener el tema de lectura y solo cambiar el borde a azul de selección.
+            import re as _re
+            from ui.widgets.body_display import body_qss
+            styled = _re.sub(
+                r"border: 2px solid [^;]+;",
+                "border: 2px solid rgba(100,180,255,0.9);",
+                body_qss(panel._body_display),
             )
+            panel.ed_cuerpo.setStyleSheet(styled)
         else:
-            editor.setStyleSheet("")
+            # Restaurar el tema de lectura del cuerpo (no vaciar el stylesheet).
+            panel._refresh_cuerpo_style(getattr(panel.cnt_cuerpo, "state", None))
 
     def _on_sel_textual_accept(self):
         if not self._stories:
@@ -2092,12 +2102,19 @@ class EditorNotaWindow(QMainWindow):
             config_global.save_maqueta_config_for(nombre, new_cfg)
             self._mq.update(new_cfg)
             self._apply_new_limits()
+            # Compartir los límites editados con las demás estaciones.
+            self.maqueta_limits_guardados.emit()
 
     def _on_maqueta_changed(self, nombre: str):
         if not nombre:
             return
         self._mq.update(config_global.maqueta_config_for(nombre))
         self._apply_new_limits()
+
+    def refrescar_limites_maqueta(self):
+        """Re-aplica los límites de la maqueta actual (p.ej. tras adoptar cambios de
+        otra estación). No toca el tema de visualización local."""
+        self._on_maqueta_changed(self._cb_maqueta.currentText())
 
     def _open_display_config(self):
         from ui.display_config_dialog import DisplayConfigDialog

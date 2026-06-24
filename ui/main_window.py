@@ -330,10 +330,10 @@ class PageButton(QPushButton):
                 while parent and not hasattr(parent, "controller"):
                     parent = parent.parent() if hasattr(parent, "parent") else None
                 controller = getattr(parent, "controller", None)
-                if not PageButton.avisos_ocultos:
-                    MaquetaWidget.draw_static(
-                        painter, pagina, rect.adjusted(4, 4, -4, -4), controller
-                    )
+                MaquetaWidget.draw_static(
+                    painter, pagina, rect.adjusted(4, 4, -4, -4), controller,
+                    mostrar_aviso=not PageButton.avisos_ocultos
+                )
             except Exception as e:
                 _log.warning(f"[WARN] draw_static en PageButton: {e}")
 
@@ -391,8 +391,8 @@ class PageButton(QPushButton):
             while parent and not hasattr(parent, "controller"):
                 parent = parent.parent() if hasattr(parent, "parent") else None
             controller = getattr(parent, "controller", None)
-            if not PageButton.avisos_ocultos:
-                MaquetaWidget.draw_static(painter, pagina, rect.adjusted(4, 4, -4, -4), controller)
+            MaquetaWidget.draw_static(painter, pagina, rect.adjusted(4, 4, -4, -4), controller,
+                                      mostrar_aviso=not PageButton.avisos_ocultos)
         except Exception as e:
             _log.warning(f"[WARN] draw_static en PageButton (armado): {e}")
         painter.restore()
@@ -429,15 +429,17 @@ class PageButton(QPushButton):
         y = self.height() - size - margin
         if self.tapa_foto and PageButton.foto_icon and not PageButton.foto_icon.isNull():
             painter.drawPixmap(x, y, size, size, PageButton.foto_icon)
-            self._realce_tapa(painter, QRect(x, y, size, size))
         if self.tapa_titulo and PageButton.titulo_icon and not PageButton.titulo_icon.isNull():
             ty = y - size - 2 if self.tapa_foto else y
             painter.drawPixmap(x, ty, size, size, PageButton.titulo_icon)
-            self._realce_tapa(painter, QRect(x, ty, size, size))
+        # "Listo para armar" → esquina superior derecha. Si además se está editando,
+        # el ícono "editando" se apila debajo para que no se superpongan.
+        tr_x = self.width() - size - margin
         if self.listo_para_armar and PageButton.activo_icon and not PageButton.activo_icon.isNull():
-            painter.drawPixmap(margin, margin, size, size, PageButton.activo_icon)
+            painter.drawPixmap(tr_x, margin, size, size, PageButton.activo_icon)
         if self.editando and PageButton.editando_icon and not PageButton.editando_icon.isNull():
-            painter.drawPixmap(self.width() - size - margin, margin, size, size, PageButton.editando_icon)
+            ey = margin + size + 2 if self.listo_para_armar else margin
+            painter.drawPixmap(tr_x, ey, size, size, PageButton.editando_icon)
 
         # Ícono de ajustes (esquina inferior izquierda)
         self._dibujar_ajustes(painter, size, margin)
@@ -487,6 +489,10 @@ class _AjustesRadialMenu(QWidget):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
+        # Al cerrar (fin de la animación de retract → self.close()), destruir el
+        # widget en vez de solo ocultarlo: evita que se acumulen menús viejos
+        # parentados a MainWindow y que queden íconos "fantasma".
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setFocusPolicy(Qt.StrongFocus)
         self._submenu_open = False
         self._item_widgets = []
@@ -1474,78 +1480,50 @@ class MainWindow(QMainWindow):
         # ----- Botonera horizontal (arriba de la grilla) -----
         toolbar = QHBoxLayout()
 
-        # Toggle Ocultar/Mostrar avisos (esquina superior izquierda de la grilla)
-        self.btn_toggle_avisos = QPushButton("  Ocultar avisos")
-        self.btn_toggle_avisos.setCheckable(True)
-        self.btn_toggle_avisos.setIcon(QIcon(resource_path("ui/assets/nover.png")))
-        self.btn_toggle_avisos.setIconSize(QSize(18, 18))
-        self.btn_toggle_avisos.setCursor(Qt.PointingHandCursor)
-        self.btn_toggle_avisos.setStyleSheet(
-            "QPushButton { background:#1e293b; color:#e2e8f0; border:1px solid #334155;"
-            " border-radius:6px; padding:6px 10px; }"
-            " QPushButton:hover { background:#334155; }"
-            " QPushButton:checked { border:2px solid #e7885f; color:#e7885f; }"
-        )
-        self.btn_toggle_avisos.toggled.connect(self.on_toggle_avisos)
+        # Toggle Ocultar/Mostrar avisos — estética del menú radial (ícono redondo,
+        # texto abajo, naranja al hover).
+        self.btn_toggle_avisos = CircleIconButton(
+            QPixmap(resource_path("ui/assets/nover.png")), "Ocultar avisos")
+        self.btn_toggle_avisos.clicked.connect(self.on_toggle_avisos)
         toolbar.addWidget(self.btn_toggle_avisos)
 
-        self.boton_pegar = QPushButton("Pegar en Quark")
-        # íconos mutables se asignan en los condicionales que los mutan
+        # --- Botones ocultos (ya no están en la toolbar; el menú radial los reemplaza). ---
+        # Se mantienen vivos y parentados a self para no romper las referencias
+        # existentes (enable/text/clicked); no se agregan a la barra.
+        self.boton_pegar = QPushButton("Pegar en Quark", self)
         self.boton_pegar.setIconSize(QSize(16,16))
-        self.boton_pegar.setStyleSheet(style_btn + """
-            border-top-right-radius: 0;
-            border-bottom-right-radius: 0;
-        """)
         self.boton_pegar.clicked.connect(self.on_pegar)
         self.boton_pegar.setEnabled(False)
-        toolbar.addWidget(self.boton_pegar)
+        self.boton_pegar.hide()
 
-        # Abrir Quark: siempre creado, pero visible solo en Maquetación
-        self.boton_abrir_quark = QPushButton("Abrir Quark")
-        # íconos mutables se asignan en los condicionales que los mutan
+        self.boton_abrir_quark = QPushButton("Abrir Quark", self)
         self.boton_abrir_quark.setIconSize(QSize(16,16))
-        self.boton_abrir_quark.setStyleSheet(style_btn)
         self.boton_abrir_quark.clicked.connect(self.on_abrir_quark)
-        self.boton_abrir_quark.setVisible(False)
-        toolbar.addWidget(self.boton_abrir_quark)
+        self.boton_abrir_quark.hide()
 
-        self.boton_quitar = QPushButton("Quitar asignación")
-        # íconos mutables se asignan en los condicionales que los mutan
+        self.boton_quitar = QPushButton("Quitar asignación", self)
         self.boton_quitar.setIconSize(QSize(16,16))
-        self.boton_quitar.setStyleSheet(style_btn)
         self.boton_quitar.clicked.connect(self.on_quitar)
         self.boton_quitar.setEnabled(False)
-        toolbar.addWidget(self.boton_quitar)
+        self.boton_quitar.hide()
 
-        # --- Botón "+" para agregar otra noticia ---
-        self.boton_agregar_nota = QPushButton("+")
+        self.boton_agregar_nota = QPushButton("+", self)
         self.boton_agregar_nota.setToolTip("Agregar otra noticia a esta página")
-        self.boton_agregar_nota.setFixedWidth(32)
-        self.boton_agregar_nota.setIconSize(QSize(14, 14))
-        self.boton_agregar_nota.setStyleSheet(style_btn + """
-            border-top-left-radius: 0;
-            border-bottom-left-radius: 0;
-            font-size: 18px;
-            padding: 2px;
-        """)
         self.boton_agregar_nota.setEnabled(False)
         self.boton_agregar_nota.clicked.connect(self.on_agregar_nota)
-        toolbar.addWidget(self.boton_agregar_nota)
+        self.boton_agregar_nota.hide()
 
-        self.boton_mover = QPushButton("Mover")
-        #self.boton_mover.setIcon(QIcon(resource_path("ui/assets/adelante.png")))
-        self.boton_mover.setIconSize(QSize(16,16))
-        self.boton_mover.setStyleSheet(style_btn)
+        # Mover / Devolver — íconos circulares (estética radial), ~10% más grandes.
+        self.boton_mover = CircleIconButton(
+            QPixmap(resource_path("ui/assets/adelante.png")), "Mover", icon_px=32)
         self.boton_mover.clicked.connect(self.on_mover)
-        self.boton_mover.setEnabled(False)
+        self.boton_mover.set_enabled(False)
         toolbar.addWidget(self.boton_mover)
 
-        self.boton_devolver = QPushButton("Devolver")
-        #self.boton_devolver.setIcon(QIcon(resource_path("ui/assets/atras.png")))
-        self.boton_devolver.setIconSize(QSize(16,16))
-        self.boton_devolver.setStyleSheet(style_btn)
+        self.boton_devolver = CircleIconButton(
+            QPixmap(resource_path("ui/assets/atras.png")), "Devolver", icon_px=32)
         self.boton_devolver.clicked.connect(self.on_devolver)
-        self.boton_devolver.setEnabled(False)
+        self.boton_devolver.set_enabled(False)
         toolbar.addWidget(self.boton_devolver)
 
 
@@ -1686,10 +1664,7 @@ class MainWindow(QMainWindow):
             boton.clicked.connect(lambda _, n=i: self.on_click_pagina(n))
             boton.doubleClicked.connect(self.on_doble_click_pagina)
             boton.ajustesClicked.connect(self.on_ajustes_menu_requested)
-            boton.setContextMenuPolicy(Qt.CustomContextMenu)
-            boton.customContextMenuRequested.connect(
-                lambda pos, n=i, b=boton: self.on_context_menu_requested(n, b.mapToGlobal(pos))
-            )
+            # Menú de botón derecho eliminado: todo se opera desde el menú radial (#4).
             fila = (i - 1) // 4
             col = (i - 1) % 4
             self.grid_layout.addWidget(boton, fila, col)
@@ -2069,6 +2044,16 @@ class MainWindow(QMainWindow):
 
 
 
+    def _on_maqueta_limits_actualizados(self):
+        """Otra estación cambió los límites de maqueta: refrescar editores abiertos."""
+        self.statusBar().showMessage("Límites de maqueta sincronizados", 3000)
+        for win in list(getattr(self, "_editor_windows", {}).values()):
+            try:
+                if win is not None and win.isVisible():
+                    win.refrescar_limites_maqueta()
+            except Exception:
+                pass
+
     def _abrir_editor_nota(self, numero: int, noticia_index: int = 0):
         existing = self._editor_windows.get(numero)
         if existing is not None and existing.isVisible():
@@ -2081,6 +2066,9 @@ class MainWindow(QMainWindow):
         win = EditorNotaWindow(numero, noticia_index, self.controller, mq_cfg, parent=self)
         win.nota_guardada.connect(self._on_nota_editada)
         win.nota_guardada_para_armar.connect(self._on_nota_guardada_para_armar)
+        # Publicar los límites de maqueta editados al config.json compartido.
+        if getattr(self, "_chrome_watcher", None) is not None:
+            win.maqueta_limits_guardados.connect(self._chrome_watcher.publicar_maqueta_limits)
         win.setAttribute(Qt.WA_DeleteOnClose, True)
 
         # Marcar "en edición" al abrir
@@ -2113,6 +2101,7 @@ class MainWindow(QMainWindow):
     def _on_nota_editada(self, numero: int):
         self.mostrar_fragmentos(numero)
         self.colorear_paginas()
+        self._registrar_trabajo(numero, "Editó con el editor")
 
     def _accion_descartar_para_armar(self, numero: int):
         try:
@@ -2154,10 +2143,12 @@ class MainWindow(QMainWindow):
 
     def on_context_menu_requested(self, numero: int, global_pos):
         """
-        Construye y muestra el menú contextual para la página `numero`.
-        Selecciona la página como activa sin disparar diálogos.
-        Etiquetas dinámicas: Abrir (PDF/Quark), Mover/Devolver (→ destino).
+        DEPRECADO (#4): el menú de botón derecho fue reemplazado por el menú radial.
+        Ya no se conecta a ninguna señal; se conserva como no-op para no romper
+        referencias. El cuerpo histórico queda inerte debajo del return.
         """
+        return
+        # --- código histórico (inalcanzable) ---
         if not getattr(self, "base_activa", False):
             return
 
@@ -2687,6 +2678,7 @@ class MainWindow(QMainWindow):
             pag = self.controller.gestor_paginas.obtener_pagina(numero)
             if pag:
                 pag.asignado = True
+            self._registrar_trabajo(numero, "Creó una nota nueva")
             self._despues_de_cambio_estado(numero)
         self._abrir_editor_nota(numero, idx)
 
@@ -2767,6 +2759,17 @@ class MainWindow(QMainWindow):
              ["Pegar en Quark"] if asignar_txt == "Asignar" else []),
             (px("borrar.png"),      "Eliminar",        lambda a: _show(self._menu_eliminar, a), puede_eliminar),
         ]
+        # Una sola instancia a la vez: cerrar el menú anterior con su animación
+        # (con WA_DeleteOnClose se autodestruye al terminar). Evita instancias
+        # múltiples y fantasmas, sin perder la animación.
+        prev = getattr(self, "_ajustes_menu", None)
+        if prev is not None:
+            try:
+                if not prev._closing:
+                    prev._dismiss()
+            except Exception:
+                # Puede estar ya destruido (WA_DeleteOnClose) → RuntimeError.
+                pass
         self._ajustes_menu = _AjustesRadialMenu(btn, items, self)
         self._ajustes_menu.show()
 
@@ -2929,6 +2932,7 @@ class MainWindow(QMainWindow):
     def _on_chrome_nota_descargada(self, numero: int):
         self._refresh_after_action(numero)
         self.on_poll()
+        self._registrar_trabajo(numero, "Cargó desde el manager")
         self.statusBar().showMessage(f"Página {numero} copiada desde Chrome Extension", 4000)
 
     def _refresh_after_action(self, numero: int):
@@ -3185,6 +3189,8 @@ class MainWindow(QMainWindow):
         try:
             self.controller.copiar_foto_tapa_a_p01(src, pagina=pagina_actual)
             self.visor_panel.set_foto_tapa_activa(True)
+            if pagina_actual:
+                self._registrar_trabajo(pagina_actual, "Marcó foto de tapa (visor)")
             _log.info(f"[FOTO TAPA] Marcada desde panel: {src.name}")
         except Exception as e:
             self.visor_panel.set_foto_tapa_activa(False)
@@ -3251,16 +3257,31 @@ class MainWindow(QMainWindow):
         self.panel_fotos.actualizar(self._fotos_estado.get("fotos", []))
 
     def _refrescar_visor_seleccion(self) -> None:
-        """Actualiza el botón 📌 y el label según la imagen visible actualmente."""
+        """Actualiza el botón 📌 (principal), el ⭐ (tapa) y el label según la
+        imagen visible actualmente."""
         img = self.visor_panel.imagen_actual()
         if img is None:
             self.visor_panel.set_foto_seleccionada(False)
+            self.visor_panel.set_foto_tapa_activa(False)
             return
-        svc     = self.controller.foto_pagina_service
-        estado  = self._fotos_estado
-        sel     = svc.esta_seleccionada(estado, img)
-        orden   = svc.orden_de(estado, img) if sel else None
+        # 📌 principal/orden — match por NOMBRE (resiliente a formas de path, ver #4).
+        fotos = (self._fotos_estado or {}).get("fotos", [])
+        sel, orden = False, None
+        for f in fotos:
+            if Path(f.get("path", "")).name == img.name:
+                sel, orden = True, f.get("orden")
+                break
         self.visor_panel.set_foto_seleccionada(sel, orden)
+
+        # ⭐ foto de tapa — solo activa si la imagen visible ES la marcada (#6).
+        tapa_archivo = self.controller.foto_tapa_archivo_origen()
+        tapa_pagina = self.controller.foto_tapa_pagina_origen()
+        es_tapa = bool(
+            tapa_archivo
+            and tapa_pagina == self.pagina_activa
+            and img.name == tapa_archivo
+        )
+        self.visor_panel.set_foto_tapa_activa(es_tapa)
 
     def _cargar_fotos_estado(self) -> None:
         """Carga fotos_seleccionadas.json para la página/subfolder activa."""
@@ -3400,6 +3421,7 @@ class MainWindow(QMainWindow):
         if pag:
             pag.seccion = nueva.strip()
         self._registrar_trabajo(numero, f"Cambió sección → {nueva.strip()}")
+        self._actualizar_paginas_secciones_extension()   # #5: refrescar puente extensión
         self._despues_de_cambio_estado(numero)
 
 
@@ -3551,8 +3573,8 @@ class MainWindow(QMainWindow):
                 self.timer.stop()
             self.boton_pegar.setEnabled(False)
             self.boton_quitar.setEnabled(False)
-            self.boton_mover.setEnabled(False)
-            self.boton_devolver.setEnabled(False)
+            self.boton_mover.set_enabled(False)
+            self.boton_devolver.set_enabled(False)
             self.pagina_activa = None
             self.colorear_paginas()
             self.label_pagina_activa.setText("Página activa: -")
@@ -3604,6 +3626,7 @@ class MainWindow(QMainWindow):
         pag.aviso_half = False
         pag.aviso_footer = False
         pag.aviso_robapagina = True
+        self._registrar_trabajo(numero, "Configuró aviso robapágina")
         self._despues_de_cambio_estado(numero)
         self.maqueta_widget.set_pagina(pag)
         self._update_aviso_nombre(pag)
@@ -3643,6 +3666,7 @@ class MainWindow(QMainWindow):
         pag.aviso_full = False
         pag.aviso_half = False
         pag.aviso_footer = True
+        self._registrar_trabajo(numero, "Configuró aviso pie de página")
         self._despues_de_cambio_estado(numero)
         self.maqueta_widget.set_pagina(pag)
         self._update_aviso_nombre(pag)
@@ -3759,6 +3783,23 @@ class MainWindow(QMainWindow):
     def _accion_quitar_asignacion(self, numero: int):
         self._refresh_after_action(numero)
         self.on_quitar()
+
+    def _actualizar_paginas_secciones_extension(self):
+        """#5 — reescribe paginas_secciones.json (puente a la extensión) con las
+        secciones actuales en memoria, para que la extensión las lea frescas."""
+        wk = getattr(self, "_chrome_watcher", None)
+        if wk is None:
+            return
+        try:
+            mapa = {}
+            for n in range(1, 17):
+                pag = self.controller.gestor_paginas.obtener_pagina(n)
+                sec = (getattr(pag, "seccion", "") or "").strip() if pag else ""
+                if sec:
+                    mapa[str(n)] = sec
+            wk.escribir_paginas_secciones(mapa)
+        except Exception as e:
+            _log.warning("No se pudo actualizar paginas_secciones (extensión): %s", e)
 
     def _registrar_trabajo(self, numero: int, accion: str):
         """#1 — registra una acción del usuario en el historial de la página."""
@@ -3960,7 +4001,7 @@ class MainWindow(QMainWindow):
 
         if perfil == "Maquetación y avisos":
             self.boton_pegar.setText("Abrir imagen")
-            self.boton_abrir_quark.setVisible(True)
+            # boton_abrir_quark ya no se muestra (removido de la toolbar, #3b).
 
             # Maqueta/aviso se muestra vía el stack (solapa "Panel de aviso", modo 2)
             self.label_aviso_nombre.setVisible(True)
@@ -3971,9 +4012,8 @@ class MainWindow(QMainWindow):
             #self.label_noticia_titulo.setVisible(False)
 
         else:
-            
+
             self.boton_pegar.setText(f"Pegar en Quark")
-            self.boton_abrir_quark.setVisible(False)
 
             # Armado: el aviso se ve al desplegar "Panel de aviso" (stack página 2)
             self.label_aviso_nombre.setVisible(False)
@@ -4945,10 +4985,24 @@ class MainWindow(QMainWindow):
 
         self._activar_base_y_arrancar()
 
+    def _actualizar_titulo_ventana(self):
+        """Título dinámico: '<nombre carpeta edición> :: armadorHuarpe'.
+        El nombre de la carpeta base es el número de edición + fecha."""
+        try:
+            base = getattr(self.controller.rutas, "quark_output_dir", None)
+            nombre = Path(base).name if base else ""
+            if nombre:
+                self.setWindowTitle(f"{nombre} :: armadorHuarpe")
+                return
+        except Exception as e:
+            _log.warning("No se pudo actualizar el título de ventana: %s", e)
+        self.setWindowTitle("Armador Huarpe")
+
     def _activar_base_y_arrancar(self):
         """Activa la base actual: refresca, arranca timer/poll y el watcher de Chrome.
         Reutilizado por 'Conectar base' y 'Seleccionar edición'."""
         self.controller.refrescar_avisos_desde_ini()
+        self._actualizar_titulo_ventana()
 
         # En lugar de hacer un verificar_qxp_pdf() sincrónico aquí,
         # activamos la base y disparamos el poll en background.
@@ -4975,6 +5029,9 @@ class MainWindow(QMainWindow):
         self._chrome_watcher.secciones_actualizadas.connect(
             lambda lista: self.statusBar().showMessage(
                 f"Secciones sincronizadas ({len(lista)})", 3000)
+        )
+        self._chrome_watcher.maqueta_limits_actualizados.connect(
+            self._on_maqueta_limits_actualizados
         )
         self._chrome_watcher.start(5000)
 
@@ -5003,10 +5060,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Edición cargada: {Path(carpeta).name}", 4000)
 
-    def on_toggle_avisos(self, checked: bool):
-        """Oculta/muestra las previsualizaciones de aviso en la grilla."""
-        PageButton.avisos_ocultos = bool(checked)
-        self.btn_toggle_avisos.setText("  Mostrar avisos" if checked else "  Ocultar avisos")
+    def on_toggle_avisos(self):
+        """Oculta/muestra las previsualizaciones de aviso en la grilla (toggle)."""
+        nuevo = not PageButton.avisos_ocultos
+        PageButton.avisos_ocultos = nuevo
+        self.btn_toggle_avisos.set_titulo("Mostrar avisos" if nuevo else "Ocultar avisos")
+        self.btn_toggle_avisos.set_activo(nuevo)
         for b in getattr(self, "boton_paginas", {}).values():
             b.update()
 
@@ -5051,6 +5110,9 @@ class MainWindow(QMainWindow):
             self.controller.refrescar_avisos_desde_ini()
         except Exception as e:
             _log.warning(f"[WARN] refrescar_avisos_desde_ini: {e}")
+
+        # Mantener fresco el puente pagina→sección para la extensión (#5).
+        self._actualizar_paginas_secciones_extension()
 
         # Luego de actualizar, refrescar vista
         self.colorear_paginas()
@@ -5278,7 +5340,7 @@ class MainWindow(QMainWindow):
             )
         else:
             # Perfil Armado: comportamiento original
-            self.boton_quitar.setVisible(True)  # restaurar en perfil Armado
+            # boton_quitar permanece oculto (removido de la toolbar, #3b).
             tiene_txt = bool(pagina.asignado)
             asignacion_local = bool(getattr(pagina, "asignada_por_ini", False))
             asignada_cualquiera = bool(getattr(pagina, "asignada_por_ini", False))
@@ -5323,23 +5385,24 @@ class MainWindow(QMainWindow):
     def actualizar_botonera_mover_devolver(self):
         pag = self.controller.gestor_paginas.get_activa()
         if not pag:
-            self.boton_mover.setEnabled(False)
-            self.boton_devolver.setEnabled(False)
+            self.boton_mover.set_enabled(False)
+            self.boton_devolver.set_enabled(False)
             return
         decision = self.controller.decidir_botones(pag.numero)
         m = decision["mover"]; d = decision["devolver"]
 
-        self.boton_mover.setText(m["label"])
-        self.boton_mover.setEnabled(m["enabled"])
+        self.boton_mover.set_titulo(m["label"])
+        self.boton_mover.set_enabled(m["enabled"])
         self.boton_mover._src = m["src"]
         self.boton_mover._dest = m["dest"]
 
-        self.boton_devolver.setText(d["label"])
-        self.boton_devolver.setEnabled(d["enabled"])
+        self.boton_devolver.set_titulo(d["label"])
+        self.boton_devolver.set_enabled(d["enabled"])
         self.boton_devolver._src = d["src"]
         self.boton_devolver._dest = d["dest"]
 
-        # --- Color especial si el QXP está en proceso pero no en Base/Final/Mandar ---
+        # --- Realce si el QXP está en proceso pero no en Base/Final/Mandar ---
+        # (relleno naranja persistente del CircleIconButton como aviso de "avanzar").
         try:
             perfil = getattr(self.controller, "perfil", "Armado y corrección")  # default por seguridad
 
@@ -5357,23 +5420,12 @@ class MainWindow(QMainWindow):
                     (mandar.exists() and self.controller.file_service.buscar_qxp_por_numero(mandar, pag.numero))
                 )
 
-                if en_proceso and not en_destino:
-                    self.boton_mover.setStyleSheet(
-                        self.boton_mover.styleSheet() + """
-                            QPushButton {
-                            color: white;
-                            font-weight: bold;
-                            background-color: goldenrod;
-                            }
-                            """
-                        ) 
-                else:
-                    self.boton_mover.setStyleSheet(style_btn)
+                self.boton_mover.set_activo(bool(en_proceso and not en_destino))
             else:
-                # En Maquetación y otros perfiles → nunca naranja
-                self.boton_mover.setStyleSheet(style_btn)
+                # En Maquetación y otros perfiles → nunca realzado
+                self.boton_mover.set_activo(False)
         except Exception:
-            self.boton_mover.setStyleSheet(style_btn)
+            self.boton_mover.set_activo(False)
 
 
 
@@ -5776,6 +5828,12 @@ class MainWindow(QMainWindow):
         self.btn_prev_noticia.setEnabled(self._noticia_index > 0)
         self.btn_next_noticia.setEnabled(self._noticia_index < len(self._noticias) - 1)
 
+        # Noticias múltiples → leve naranja de fondo en el selector « »
+        multi = len(self._noticias) > 1
+        naranja = "QPushButton{background-color: rgba(231,136,95,0.28);}"
+        for b in (self.btn_prev_noticia, self.btn_next_noticia):
+            b.setStyleSheet(style_btn + (naranja if multi else ""))
+
         # --- Mostrar label de noticia con len (calculado del disco) ---
         sufijo = noticia_dir.name[-1].upper()
         try:
@@ -5988,6 +6046,7 @@ class MainWindow(QMainWindow):
 
         src = getattr(self.boton_mover, "_src", None)
         dest = getattr(self.boton_mover, "_dest", None)
+        label = self.boton_mover.titulo().strip()
 
         if src and dest:
             result = self.controller.ejecutar_mover(src, dest)
@@ -6009,7 +6068,9 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            # Caso OK
+            # Caso OK — registrar el destino real (label del botón: "Mover a Base", etc.)
+            if label:
+                self._registrar_trabajo(pag.numero, label)
             self.colorear_paginas()
             self.actualizar_botonera_mover_devolver()
             self.on_poll()
@@ -6024,6 +6085,7 @@ class MainWindow(QMainWindow):
 
         src = getattr(self.boton_devolver, "_src", None)
         dest = getattr(self.boton_devolver, "_dest", None)
+        label = self.boton_devolver.titulo().strip()
 
         if src and dest:
             result = self.controller.ejecutar_devolver(src, dest)
@@ -6045,7 +6107,9 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            # OK
+            # OK — registrar la devolución real (label del botón: "Devolver a PDF", etc.)
+            if label:
+                self._registrar_trabajo(pag.numero, label)
             self.colorear_paginas()
             self.actualizar_botonera_mover_devolver()
             self.on_poll()

@@ -84,6 +84,7 @@ class ChromeWatcher(QObject):
     nota_descargada = pyqtSignal(int)   # número de página procesada
     error_proceso   = pyqtSignal(str)   # mensaje de error
     secciones_actualizadas = pyqtSignal(list)   # lista adoptada desde otra estación
+    maqueta_limits_actualizados = pyqtSignal()  # límites de maqueta adoptados de otra estación
 
     _WATCH_DIR      = Path.home() / "Downloads" / "armadorHuarpe"
     _SECCIONES_JSON = _WATCH_DIR / "secciones.json"
@@ -94,11 +95,12 @@ class ChromeWatcher(QObject):
         self._fs = file_service
         self._by = by
         self._sec_mtime = 0.0   # mtime del secciones.json compartido visto por última vez
+        self._skip_logged: set[str] = set()   # descargas ya copiadas ya logueadas (evita spam)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._scan)
 
     def start(self, interval_ms: int = 5000):
-        self._sync_secciones_compartidas()
+        self._sync_compartido()
         self._write_secciones_json()
         self._write_paginas_secciones_json()
         self._timer.start(interval_ms)
@@ -130,27 +132,44 @@ class ChromeWatcher(QObject):
 
     def _write_paginas_secciones_json(self) -> None:
         """#6 — mapa {pagina: seccion} con las secciones configuradas en Python,
-        para que la extensión autoseleccione la sección al colocar la página."""
+        para que la extensión autoseleccione la sección al colocar la página.
+        Lee de los INI (uso en start, cuando aún no hay datos en memoria)."""
+        mapa = {}
+        for n in range(1, 17):
+            try:
+                entry = self._fs.read_page_entry(n)
+                sec = (entry.get("seccion") or "").strip()
+                if sec:
+                    mapa[str(n)] = sec
+            except Exception:
+                continue
+        self.escribir_paginas_secciones(mapa)
+
+    def escribir_paginas_secciones(self, mapa: dict) -> None:
+        """Escribe el mapa pagina→sección (recibe el dict ya armado, p.ej. desde
+        gestor_paginas en memoria, para mantenerlo fresco tras cada poll/cambio)."""
         try:
-            mapa = {}
-            for n in range(1, 17):
-                try:
-                    entry = self._fs.read_page_entry(n)
-                    sec = (entry.get("seccion") or "").strip()
-                    if sec:
-                        mapa[str(n)] = sec
-                except Exception:
-                    continue
             self._WATCH_DIR.mkdir(parents=True, exist_ok=True)
             self._PAGINAS_SECCIONES_JSON.write_text(
-                json.dumps({"paginas": mapa}, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+                json.dumps({"paginas": mapa or {}}, ensure_ascii=False, indent=2),
+                encoding="utf-8")
         except Exception as exc:
             _log.warning("No se pudo escribir paginas_secciones.json: %s", exc)
 
-    # ── secciones compartidas (materiales/secciones.json) — #10 ──
+    # ── config compartido (materiales/config.json): secciones + límites maqueta ──
 
-    def _secciones_compartidas_path(self):
+    def _shared_config_path(self):
+        """Ruta del config.json compartido entre estaciones (en materiales/)."""
+        try:
+            mat = getattr(self._fs, "material", None)
+            if mat:
+                return Path(mat) / "config.json"
+        except Exception:
+            pass
+        return None
+
+    def _legacy_secciones_path(self):
+        """Viejo materiales/secciones.json (para migración inicial a config.json)."""
         try:
             mat = getattr(self._fs, "material", None)
             if mat:
@@ -159,55 +178,109 @@ class ChromeWatcher(QObject):
             pass
         return None
 
-    def _sync_secciones_compartidas(self) -> None:
-        """Lee materiales/secciones.json (lista canónica compartida entre estaciones).
-        Last-writer-wins por mtime: si el compartido es más nuevo, lo adopta; si no
-        existe, lo crea desde la lista local."""
+    def _sync_compartido(self) -> None:
+        """Adopta el config.json compartido (secciones + límites de maqueta) si otra
+        estación lo cambió (mtime check barato). Lecturas sin lock (snapshot atómico)."""
         from config.config import config_global
-        shared = self._secciones_compartidas_path()
+        from services.shared_config_service import read_shared
+        shared = self._shared_config_path()
         if shared is None:
             return
         try:
-            if shared.exists():
-                mtime = shared.stat().st_mtime
-                if mtime > self._sec_mtime:
-                    data = json.loads(shared.read_text(encoding="utf-8"))
-                    lista = [s for s in (data.get("secciones") or []) if str(s).strip()]
-                    self._sec_mtime = mtime
-                    if lista and lista != config_global.secciones:
-                        config_global.save_secciones(lista)
-                        self._write_secciones_json()
-                        self.secciones_actualizadas.emit(lista)
-                        _log.info("Secciones adoptadas de %s (%d)", shared, len(lista))
-            else:
-                # No existe el compartido aún: publicarlo desde la lista local.
-                self._escribir_secciones_compartidas(config_global.secciones)
-        except Exception as exc:
-            _log.warning("No se pudo sincronizar secciones compartidas: %s", exc)
+            if not shared.exists():
+                # No existe aún: sembrar desde lo local (migrando del viejo secciones.json).
+                self._sembrar_config_compartido()
+                return
+            mtime = shared.stat().st_mtime
+            if mtime <= self._sec_mtime:
+                return
+            data = read_shared(shared)
+            if data is None:
+                return
+            self._sec_mtime = mtime
 
-    def _escribir_secciones_compartidas(self, lista: list) -> None:
-        shared = self._secciones_compartidas_path()
+            # --- Secciones ---
+            lista = [s for s in (data.get("secciones") or []) if str(s).strip()]
+            if lista and lista != config_global.secciones:
+                config_global.save_secciones(lista)
+                self._write_secciones_json()
+                self.secciones_actualizadas.emit(lista)
+                _log.info("Secciones adoptadas de %s (%d)", shared, len(lista))
+
+            # --- Límites de maqueta ---
+            limites = data.get("maqueta_limits")
+            if isinstance(limites, dict) and limites != config_global.export_maqueta_limits():
+                config_global.apply_maqueta_limits(limites)
+                self.maqueta_limits_actualizados.emit()
+                _log.info("Límites de maqueta adoptados de %s", shared)
+        except Exception as exc:
+            _log.warning("No se pudo sincronizar config compartido: %s", exc)
+
+    def _sembrar_config_compartido(self) -> None:
+        """Crea config.json desde la config local, migrando el viejo secciones.json si existe."""
+        from config.config import config_global
+        from services.shared_config_service import update_shared
+        shared = self._shared_config_path()
         if shared is None:
             return
+        # Secciones: preferir las del viejo compartido si existía (migración).
+        secciones = list(config_global.secciones)
+        legacy = self._legacy_secciones_path()
         try:
-            shared.parent.mkdir(parents=True, exist_ok=True)
-            shared.write_text(
-                json.dumps({"secciones": lista}, ensure_ascii=False, indent=2),
-                encoding="utf-8")
-            try:
+            if legacy and legacy.exists():
+                old = json.loads(legacy.read_text(encoding="utf-8"))
+                old_lista = [s for s in (old.get("secciones") or []) if str(s).strip()]
+                if old_lista:
+                    secciones = old_lista
+                    if old_lista != config_global.secciones:
+                        config_global.save_secciones(old_lista)
+        except Exception:
+            pass
+        try:
+            nuevo = update_shared(shared, lambda d: {
+                **d,
+                "version": d.get("version", 1),
+                "secciones": secciones,
+                "maqueta_limits": config_global.export_maqueta_limits(),
+            })
+            if nuevo is not None and shared.exists():
                 self._sec_mtime = shared.stat().st_mtime
-            except Exception:
-                pass
+            self._write_secciones_json()
         except Exception as exc:
-            _log.warning("No se pudo escribir secciones compartidas: %s", exc)
+            _log.warning("No se pudo sembrar config compartido: %s", exc)
 
     def publicar_secciones(self, lista: list) -> None:
-        """Reemplazo total (last-writer-wins): guarda la lista local, la publica al
-        compartido y refresca el de la extensión."""
+        """Reemplazo total de la lista de secciones: guarda local, mergea al config.json
+        compartido (bajo lock) y refresca el secciones.json de la extensión."""
         from config.config import config_global
+        from services.shared_config_service import update_shared
         config_global.save_secciones(lista)
-        self._escribir_secciones_compartidas(lista)
+        shared = self._shared_config_path()
+        if shared is not None:
+            nuevo = update_shared(shared, lambda d: {**d, "version": d.get("version", 1),
+                                                     "secciones": list(lista)})
+            try:
+                if nuevo is not None and shared.exists():
+                    self._sec_mtime = shared.stat().st_mtime
+            except Exception:
+                pass
         self._write_secciones_json()
+
+    def publicar_maqueta_limits(self) -> None:
+        """Publica los límites de maqueta locales al config.json compartido (merge bajo lock)."""
+        from config.config import config_global
+        from services.shared_config_service import update_shared
+        shared = self._shared_config_path()
+        if shared is None:
+            return
+        limites = config_global.export_maqueta_limits()
+        nuevo = update_shared(shared, lambda d: {**d, "version": d.get("version", 1),
+                                                 "maqueta_limits": limites})
+        try:
+            if nuevo is not None and shared.exists():
+                self._sec_mtime = shared.stat().st_mtime
+        except Exception:
+            pass
 
     def reload_secciones(self, lista: list) -> None:
         """Llamado por el dialog de secciones cuando el usuario guarda."""
@@ -216,8 +289,8 @@ class ChromeWatcher(QObject):
     # ── Escaneo ──────────────────────────────────────────────
 
     def _scan(self):
-        # #10 — adoptar secciones compartidas si otra estación las cambió (mtime check barato).
-        self._sync_secciones_compartidas()
+        # #10 — adoptar config compartido (secciones + límites) si otra estación lo cambió.
+        self._sync_compartido()
         if not self._WATCH_DIR.exists() or not self._SECCIONES_JSON.exists():
             self._write_secciones_json()
         if not self._WATCH_DIR.exists():
@@ -234,7 +307,9 @@ class ChromeWatcher(QObject):
                 _log.warning("Error leyendo %s: %s", pending_path, exc)
                 continue
             if data.get("copiado"):
-                _log.debug("skip %s (ya copiado por otro proceso/sesión)", subdir.name)
+                if subdir.name not in self._skip_logged:
+                    _log.debug("skip %s (ya copiado por otro proceso/sesión)", subdir.name)
+                    self._skip_logged.add(subdir.name)
                 continue
             try:
                 self._process(subdir, data, pending_path)

@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 from PyQt5.QtCore import Qt, QObject, QEvent, pyqtSignal
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QComboBox,
-    QCheckBox, QDialog, QDialogButtonBox, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QTextEdit,
+    QComboBox, QCheckBox, QDialog, QDialogButtonBox, QPushButton,
 )
 from PyQt5.QtGui import QFont
 
@@ -156,7 +156,7 @@ class NextFilter(QObject):
             mod = ev.modifiers()
             no_mod = not (mod & (Qt.ControlModifier | Qt.AltModifier))
             if key == Qt.Key_Tab and no_mod:
-                if isinstance(obj, (QLineEdit, QPlainTextEdit)):
+                if isinstance(obj, (QLineEdit, QPlainTextEdit, QTextEdit)):
                     self._on_next(obj)
                     return True
             # Enter/Return salta campo solo en QLineEdit (una línea); en QPlainTextEdit inserta salto
@@ -287,7 +287,10 @@ class StoryPanel(QWidget):
         lay.addWidget(self._block_epigrafe)
 
         # ── Cuerpo ──
-        self.ed_cuerpo = QPlainTextEdit()
+        # QTextEdit (no QPlainTextEdit): QPlainTextEdit ignora el interlineado
+        # (QPlainTextDocumentLayout no aplica QTextBlockFormat line-height).
+        self.ed_cuerpo = QTextEdit()
+        self.ed_cuerpo.setAcceptRichText(False)   # pegar como texto plano
         self.ed_cuerpo.setMinimumHeight(360)
         self.ed_cuerpo.setPlaceholderText("Cuerpo de la nota...")
         # manage_style=False: el tema de lectura (claro) lo controla _refresh_cuerpo_style,
@@ -624,7 +627,8 @@ class StoryPanel(QWidget):
         toolbar = BodyDisplayToolbar(self._body_display, dlg)
         lay.addWidget(toolbar)
 
-        ed = QPlainTextEdit(dlg)
+        ed = QTextEdit(dlg)
+        ed.setAcceptRichText(False)
         ed.setPlainText(self.ed_cuerpo.toPlainText())
         lay.addWidget(ed)
         apply_body_display(ed, self._body_display)

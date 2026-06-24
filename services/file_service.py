@@ -3169,6 +3169,13 @@ class FileService:
                     seccion = (entry.get("seccion") or "").strip()
                     nombre_maqueta = resolve_maqueta_name(tipo, seccion, base_maquetas) or f"{tipo}Generica.qxp"
 
+            # P02: preferir la variante con sufijo "Dos" (ej. vaciaGenericaDos.qxp);
+            # si no existe, queda el nombre original (fallback a {tipo}{Sufijo}.qxp).
+            if numero == 2 and nombre_maqueta.lower().endswith(".qxp"):
+                cand_dos = nombre_maqueta[:-4] + "Dos.qxp"
+                if (base_maquetas / cand_dos).exists():
+                    nombre_maqueta = cand_dos
+
             origen = base_maquetas / nombre_maqueta
             if not origen.exists():
                 _log.info("Maqueta '%s' no encontrada, usando vaciaGenerica.qxp", nombre_maqueta)

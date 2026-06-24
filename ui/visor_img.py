@@ -285,34 +285,41 @@ class VisorPanelWidget(QWidget):
         nav.addWidget(self.btn_next)
         layout.addLayout(nav)
 
-        # Fila 2: íconos circulares centrados debajo de los botones de navegación
+        # Fila 2: íconos circulares centrados debajo de los botones de navegación.
+        # label_w común → todos miden lo mismo y el word-wrap los deja equidistantes.
+        _LBL_W = 74
+        # 📌 es un INDICADOR puro del orden de foto (no marca/desmarca): el label
+        # refleja "Foto principal"/"Segunda foto"/… cuando la imagen visible está
+        # seleccionada (vía set_foto_seleccionada).
         self.btn_seleccionar = CircleIconButton(
-            QPixmap(resource_path("ui/assets/pin.png")), "Marcar principal")
-        self.btn_seleccionar.clicked.connect(self._on_seleccionar_clicked)
+            QPixmap(resource_path("ui/assets/pin.png")), "Foto", label_w=_LBL_W)
 
         self.btn_foto_tapa = CircleIconButton(
-            QPixmap(resource_path("ui/assets/favorito.png")), "Marcar foto tapa")
+            QPixmap(resource_path("ui/assets/favorito.png")), "Marcar foto tapa",
+            label_w=_LBL_W)
         self.btn_foto_tapa.clicked.connect(self._on_foto_tapa_clicked)
 
         self.btn_editar_foto = CircleIconButton(
-            QPixmap(resource_path("ui/assets/color.png")), "Editar foto")
+            QPixmap(resource_path("ui/assets/color.png")), "Editar foto",
+            label_w=_LBL_W)
         self.btn_editar_foto.clicked.connect(self._on_editar_foto_clicked)
 
         self.btn_qr = CircleIconButton(
-            QPixmap(resource_path("ui/assets/qr.png")), "Generar QR")
+            QPixmap(resource_path("ui/assets/qr.png")), "Generar QR", label_w=_LBL_W)
         self.btn_qr.clicked.connect(self._on_qr_clicked)
 
         self._aplicar_estilo_estrella(False)
         self._aplicar_estilo_seleccionar(False)
 
         iconos = QHBoxLayout()
-        iconos.setSpacing(8)
-        iconos.addStretch()
-        iconos.addWidget(self.btn_seleccionar)
-        iconos.addWidget(self.btn_foto_tapa)
-        iconos.addWidget(self.btn_editar_foto)
-        iconos.addWidget(self.btn_qr)
-        iconos.addStretch()
+        iconos.setContentsMargins(0, 0, 0, 0)
+        iconos.setSpacing(0)
+        # Distancia equilibrada: un stretch igual entre (y a los lados de) cada ícono.
+        for _btn in (self.btn_seleccionar, self.btn_foto_tapa,
+                     self.btn_editar_foto, self.btn_qr):
+            iconos.addStretch(1)
+            iconos.addWidget(_btn)
+        iconos.addStretch(1)
         layout.addLayout(iconos)
 
         # Nombre de la imagen
@@ -403,10 +410,25 @@ class VisorPanelWidget(QWidget):
         self._foto_tapa_activa = activa
         self._aplicar_estilo_estrella(activa)
 
+    @staticmethod
+    def _label_orden_foto(orden: Optional[int]) -> str:
+        """Etiqueta del indicador 📌 según el orden (0 → 'Foto principal', …)."""
+        if orden is None:
+            return "Foto"
+        if orden == 0:
+            return "Foto principal"
+        ordinales = {
+            1: "Segunda", 2: "Tercera", 3: "Cuarta", 4: "Quinta", 5: "Sexta",
+            6: "Séptima", 7: "Octava", 8: "Novena", 9: "Décima",
+        }
+        nombre = ordinales.get(orden)
+        return f"{nombre} foto" if nombre else f"{orden + 1}ª foto"
+
     def set_foto_seleccionada(self, seleccionada: bool,
                                orden: Optional[int] = None) -> None:
         """
-        Actualiza el estado visual del botón 📌 y el sufijo del label de nombre.
+        Actualiza el INDICADOR 📌: borde naranja persistente + label con el orden
+        de la foto cuando la imagen visible está seleccionada.
 
         Llamar desde MainWindow cada vez que cambia la imagen visible en el visor
         o cuando el estado de selección cambia.
@@ -414,7 +436,11 @@ class VisorPanelWidget(QWidget):
         self._foto_seleccionada = seleccionada
         self._foto_orden = orden
         self._aplicar_estilo_seleccionar(seleccionada)
-        # Refresca el label para mostrar/ocultar [#N]
+        if seleccionada and orden is not None:
+            self.btn_seleccionar.set_titulo(self._label_orden_foto(orden))
+        else:
+            self.btn_seleccionar.set_titulo("Foto")
+        # Refresca el label de nombre para mostrar/ocultar [#N]
         if self._image_index >= 0:
             self._show_current()
 
@@ -500,22 +526,10 @@ class VisorPanelWidget(QWidget):
     # ── Selección de fotos de página ─────────────────────────────────────────
 
     def _on_seleccionar_clicked(self) -> None:
-        if not self._images or self._image_index < 0:
-            return
-        src = self._images[self._image_index]
-        if self._foto_seleccionada:
-            # Deseleccionar
-            self._foto_seleccionada = False
-            self._foto_orden        = None
-            self._aplicar_estilo_seleccionar(False)
-            self.foto_deseleccionar.emit(src)
-            _log.debug("Foto deseleccionada vía botón: %s", src.name)
-        else:
-            # Seleccionar
-            self._foto_seleccionada = True
-            self._aplicar_estilo_seleccionar(True)
-            self.foto_seleccionar.emit(src)
-            _log.debug("Foto seleccionada vía botón: %s", src.name)
+        # 📌 ya no marca/desmarca: es un indicador puro del orden de foto. La
+        # selección de fotos vive en el menú contextual del editor (fotos_browser).
+        # Método conservado como no-op por compatibilidad.
+        return
 
     def _aplicar_estilo_seleccionar(self, activa: bool) -> None:
         self.btn_seleccionar.set_activo(bool(activa))

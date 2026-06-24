@@ -1184,6 +1184,15 @@ class ArmadorController:
             pag.aviso_robapagina = bool(entry.get("aviso_robapagina", False))
             pag.aviso_nombre = (entry.get("aviso_nombre") or "").strip()
 
+            # Si la página ya no tiene aviso (p.ej. al cambiar de edición), limpiar el
+            # pixmap cacheado para que no persista el aviso de la edición anterior.
+            if not (pag.aviso_full or pag.aviso_half or pag.aviso_footer
+                    or pag.aviso_robapagina) or not pag.aviso_nombre:
+                pag.aviso_pixmap = None
+                pag.aviso_mtime = None
+                if hasattr(pag, "aviso_path"):
+                    pag.aviso_path = None
+
             # Foto y título de tapa
             pag.tapa_foto = bool(entry.get("tapa_foto", False))
             pag.tapa_titulo = bool(entry.get("tapa_titulo", False))
@@ -1279,7 +1288,8 @@ class ArmadorController:
         _log.info("Foto tapa copiada: %s → %s", src.name, dest)
 
         # Guardar origen para que la UI solo active la estrella en esa página/pool
-        origen: dict = {}
+        # y SOLO cuando la imagen visible es la marcada (#6) → guardamos el nombre original.
+        origen: dict = {"archivo": src.name}
         if pagina is not None:
             origen["pagina"] = pagina
         if pool_dir is not None:
@@ -1362,6 +1372,22 @@ class ArmadorController:
             data = json.loads(origen_path.read_text(encoding="utf-8"))
             v = data.get("pagina")
             return int(v) if v is not None else None
+        except Exception:
+            return None
+
+    def foto_tapa_archivo_origen(self) -> Optional[str]:
+        """Nombre del archivo original marcado como foto de tapa, o None (#6)."""
+        import json
+        mat = self.file_service.material
+        if not mat:
+            return None
+        origen_path = mat / "P01" / self.FOTO_TAPA_ORIGEN
+        if not origen_path.exists():
+            return None
+        try:
+            data = json.loads(origen_path.read_text(encoding="utf-8"))
+            arch = (data.get("archivo") or "").strip()
+            return arch or None
         except Exception:
             return None
 

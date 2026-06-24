@@ -15,6 +15,7 @@ import de módulos de la aplicación.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -22,7 +23,7 @@ from pathlib import Path
 _configured = False
 
 
-def setup_logging(log_dir: Path, level: int = logging.DEBUG) -> None:
+def setup_logging(log_dir: Path, level: int | None = None) -> None:
     """
     Inicializa el sistema de logging.
 
@@ -30,11 +31,21 @@ def setup_logging(log_dir: Path, level: int = logging.DEBUG) -> None:
     - StreamHandler: consola (útil en desarrollo; sin color para simplicidad).
     - Formato: '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 
+    Nivel por defecto INFO para no inundar el log con el ruido del poll. Se puede
+    subir a DEBUG con la variable de entorno ARMH_LOG_LEVEL=DEBUG (o el valor que
+    se pase explícitamente en `level`).
+
     Es idempotente: si ya fue llamada, no agrega handlers duplicados.
     """
     global _configured
     if _configured:
         return
+
+    if level is None:
+        _env = (os.environ.get("ARMH_LOG_LEVEL") or "INFO").strip().upper()
+        level = getattr(logging, _env, logging.INFO)
+        if not isinstance(level, int):
+            level = logging.INFO
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "armadorHuarpe.log"
@@ -51,7 +62,7 @@ def setup_logging(log_dir: Path, level: int = logging.DEBUG) -> None:
         encoding="utf-8",
     )
     file_handler.setFormatter(fmt)
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(level)
 
     # En Windows la consola puede no soportar UTF-8; usamos errors='replace'
     # para evitar UnicodeEncodeError con caracteres especiales en mensajes de log.
@@ -64,7 +75,7 @@ def setup_logging(log_dir: Path, level: int = logging.DEBUG) -> None:
     ) if hasattr(sys.stdout, "buffer") else sys.stdout
     console_handler = logging.StreamHandler(_stdout_safe)
     console_handler.setFormatter(fmt)
-    console_handler.setLevel(logging.DEBUG)
+    console_handler.setLevel(level)
 
     root = logging.getLogger()
     root.setLevel(level)

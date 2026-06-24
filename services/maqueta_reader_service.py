@@ -97,16 +97,28 @@ def resolve_maqueta_name(
     seccion_norm = _normalizar(seccion)
     suffix = _SECTION_SUFFIX_MAP.get(seccion_norm)
 
-    if suffix:
-        candidato = maquetas_dir / f"{aviso_tipo}{suffix}.qxp"
-        if candidato.exists():
-            _log.debug("resolve_maqueta: %s (tipo=%s, seccion=%s)", candidato.name, aviso_tipo, seccion)
-            return candidato.name
+    # Matching insensible a mayúsculas/acentos: el nombre real del archivo puede
+    # diferir del CamelCase del mapa (ej. archivo 'vaciaCafédelaPolítica.qxp' vs
+    # sufijo 'CaféDeLaPolítica'). Escaneamos el directorio y comparamos normalizado.
+    try:
+        archivos = list(maquetas_dir.glob("*.qxp"))
+    except Exception:
+        archivos = []
 
-    fallback = maquetas_dir / f"{aviso_tipo}Generica.qxp"
-    if fallback.exists():
-        _log.debug("resolve_maqueta fallback: %s (tipo=%s, seccion=%s)", fallback.name, aviso_tipo, seccion)
-        return fallback.name
+    def _buscar(nombre_objetivo: str):
+        objetivo = _normalizar(nombre_objetivo)
+        return next((f.name for f in archivos if _normalizar(f.stem) == objetivo), None)
+
+    if suffix:
+        hit = _buscar(f"{aviso_tipo}{suffix}")
+        if hit:
+            _log.debug("resolve_maqueta: %s (tipo=%s, seccion=%s)", hit, aviso_tipo, seccion)
+            return hit
+
+    fallback = _buscar(f"{aviso_tipo}Generica")
+    if fallback:
+        _log.debug("resolve_maqueta fallback: %s (tipo=%s, seccion=%s)", fallback, aviso_tipo, seccion)
+        return fallback
 
     _log.warning("resolve_maqueta: no se encontró plantilla para tipo='%s', seccion='%s' en %s",
                  aviso_tipo, seccion, maquetas_dir)
@@ -168,7 +180,10 @@ def get_templates_for_page(pagina) -> list[str]:
     section_suffix = _SECTION_SUFFIX_MAP.get(seccion_norm)
     # Only restrict by section when a recognised non-generic section is assigned
     restrict_section = section_suffix is not None
-    valid_suffixes = {"Generica", section_suffix} if restrict_section else set()
+    # Comparación normalizada (case/acentos): el sufijo del archivo real puede
+    # diferir del CamelCase del mapa (ej. 'Cafédelapolítica' vs 'CaféDeLaPolítica').
+    valid_norm = ({_normalizar("Generica"), _normalizar(section_suffix)}
+                  if restrict_section else set())
 
     result = []
     for tpl in all_tpls:
@@ -179,7 +194,7 @@ def get_templates_for_page(pagina) -> list[str]:
         suffix = stem[len(matched):]    # e.g. "Cultura", "Generica", ""
         if not suffix:
             result.append(tpl)          # "completa.qxp" — no section suffix
-        elif not restrict_section or suffix in valid_suffixes:
+        elif not restrict_section or _normalizar(suffix) in valid_norm:
             result.append(tpl)
 
     return result if result else all_tpls
