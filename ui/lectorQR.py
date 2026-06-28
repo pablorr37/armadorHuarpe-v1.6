@@ -8,10 +8,17 @@ from typing import Optional
 from pyzbar import pyzbar
 
 from PyQt5.QtCore import Qt, QPoint, QRect, QTimer, pyqtSignal
-from PyQt5.QtGui import QPainter, QColor, QPen, QCursor, QFont
-from PyQt5.QtWidgets import QWidget, QApplication, QPushButton
+from PyQt5.QtGui import QPainter, QColor, QPen, QCursor, QFont, QIcon, QPixmap
+from PyQt5.QtWidgets import QWidget, QApplication, QPushButton, QLabel
 import logging
 _log = logging.getLogger(__name__)
+
+try:
+    from utils.resources import resource_path
+except Exception:  # fallback dev
+    from pathlib import Path as _P
+    def resource_path(rel: str) -> str:
+        return str(_P(__file__).resolve().parent.parent / rel)
 
 
 
@@ -61,10 +68,14 @@ class QROverlay(QWidget):
     qr_detected = pyqtSignal(str)
     overlay_closed = pyqtSignal()
 
-    def __init__(self, parent=None, capture_size: int = CAP_SIZE):
+    def __init__(self, parent=None, capture_size: int = CAP_SIZE, info: dict = None,
+                 auto_info: bool = False):
         super().__init__(parent)
         self.capture_size = capture_size
         self._visible = False  # mira inicialmente apagada
+        self._info = info or {}
+        self._info_visible = bool(auto_info)  # si True, cápsulas visibles de entrada
+        self._info_labels = []
 
         # Ventana transparente y siempre encima
         self.setWindowFlags(
@@ -87,8 +98,10 @@ class QROverlay(QWidget):
         self._tick_timer.timeout.connect(self._tick)
         self._tick_timer.start()
 
-        # Crear botón flotante “QR”
+        # Crear botón flotante “QR” + botón "información" (arriba del QR) y cápsulas
         self._create_qr_button(geo)
+        self._create_info_button(geo)
+        self._create_info_capsules(geo)
 
         self.show()
         _log.info("[QR] Overlay activo. Usa el botón QR para encender o apagar la mira.")
@@ -115,10 +128,68 @@ class QROverlay(QWidget):
         # Posición: 20 px arriba y a la izquierda del borde inferior derecho
         bx = geo.width() - 80
         by = geo.height() - 200
+        self._qr_bx, self._qr_by = bx, by
         self.qr_button.move(bx, by)
 
         # Eventos: clic izquierdo para alternar, derecho para cerrar
         self.qr_button.mousePressEvent = self._on_qr_button_click
+
+    # ----------------------------------------------------------
+    # Botón "información" + cápsulas (#9)
+    # ----------------------------------------------------------
+    def _create_info_button(self, geo):
+        """Botón redondo 'información' justo arriba del botón QR."""
+        self.info_button = QPushButton(self)
+        self.info_button.setFixedSize(60, 60)
+        self.info_button.setIcon(QIcon(QPixmap(resource_path("ui/assets/informacion.png"))))
+        from PyQt5.QtCore import QSize
+        # Ícono ~10% más grande (34→37) → anillo naranja más fino, mismo botón 60px.
+        self.info_button.setIconSize(QSize(37, 37))
+        self.info_button.setStyleSheet(
+            "QPushButton{border-radius:30px;background-color:#e7885f;}"
+            "QPushButton:hover{background-color:#d9534f;}"
+        )
+        self.info_button.move(self._qr_bx, self._qr_by - 80)
+        self.info_button.mousePressEvent = self._on_info_button_click
+
+    def _create_info_capsules(self, geo):
+        """Cápsulas estilizadas (naranja→rojo) con las filas de info (título: valor).
+        Las filas vienen en info['filas'] = [(titulo, valor), …] (contexto PDF o pegado).
+        Centradas sobre el botón de info y apiladas hacia arriba; más chicas."""
+        filas = self._info.get("filas") or []
+        cap_w, cap_h, gap = 230, 26, 6
+        cx = self._qr_bx + 30                  # centro horizontal del botón de info (60px)
+        # Clampear dentro del viewport: el botón está pegado al borde derecho, así que
+        # centrar la cápsula la sacaba de pantalla por la derecha.
+        x = max(8, min(cx - cap_w // 2, geo.width() - cap_w - 8))
+        info_top = self._qr_by - 80
+        for i, (titulo, valor) in enumerate(filas):
+            lbl = QLabel(f"  {titulo}: {valor if (valor not in (None, '')) else '—'}", self)
+            lbl.setFixedSize(cap_w, cap_h)
+            lbl.setFont(QFont("Arial", 9, QFont.Bold))
+            lbl.setStyleSheet(
+                "QLabel{color:white;border-radius:13px;padding:0 8px;"
+                "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                "stop:0 #e7885f, stop:1 #d9534f);}"
+            )
+            # i=0 inmediatamente arriba del botón; crecen hacia arriba (clampeadas).
+            y = max(8, info_top - (i + 1) * (cap_h + gap))
+            lbl.move(x, y)
+            lbl.setVisible(self._info_visible)   # respeta auto_info
+            self._info_labels.append(lbl)
+
+    def _on_info_button_click(self, event):
+        if event.button() == Qt.LeftButton:
+            self._toggle_info()
+        elif event.button() == Qt.RightButton:
+            # Mismo gesto que el QR: clic derecho cierra el overlay.
+            self.close()
+        event.accept()
+
+    def _toggle_info(self):
+        self._info_visible = not self._info_visible
+        for lbl in self._info_labels:
+            lbl.setVisible(self._info_visible)
 
     def _on_qr_button_click(self, event):
         if event.button() == Qt.LeftButton:
@@ -242,18 +313,19 @@ class QROverlay(QWidget):
 _overlay_ref: Optional[QROverlay] = None
 
 
-def start_overlay(parent=None):
-    """Crea (o reinicia) el overlay. Arranca con mira apagada y botón QR visible."""
+def start_overlay(parent=None, info: dict = None, auto_info: bool = False):
+    """Crea (o reinicia) el overlay. Arranca con mira apagada y botón QR visible.
+    Si auto_info=True, las cápsulas de información arrancan visibles."""
     global _overlay_ref
     if _overlay_ref is None or not _overlay_ref.isVisible():
-        _overlay_ref = QROverlay(parent)
+        _overlay_ref = QROverlay(parent, info=info, auto_info=auto_info)
         return _overlay_ref
     else:
         try:
             _overlay_ref.close()
         except Exception:
             pass
-        _overlay_ref = QROverlay(parent)
+        _overlay_ref = QROverlay(parent, info=info, auto_info=auto_info)
         return _overlay_ref
 
 

@@ -2,7 +2,6 @@
 ChromeWatcher — detecta descargas de la extensión Chrome y las copia
 a materiales/Pnn/, replicando exactamente lo que hace _scrape_core.
 """
-import io
 import json
 import logging
 import os
@@ -15,23 +14,6 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 _log = logging.getLogger(__name__)
 
 _QR_LINK_RE = re.compile(r"Link para el QR:\s*(https?://\S+)", re.IGNORECASE)
-
-
-def _convertir_webp_a_jpg(path: Path) -> None:
-    """Convierte WebP a JPG en el lugar; no hace nada si el archivo no es WebP."""
-    try:
-        data = path.read_bytes()
-        if data[0:4] != b"RIFF" or data[8:12] != b"WEBP":
-            return
-        from PIL import Image
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        jpg_path = path.with_suffix(".jpg")
-        img.save(jpg_path, "JPEG", quality=100, subsampling=0)
-        if jpg_path != path:
-            path.unlink()
-        _log.debug("WebP convertido a JPG: %s", jpg_path.name)
-    except Exception as exc:
-        _log.warning("No se pudo convertir WebP %s: %s", path.name, exc)
 
 
 def generar_qr_png(url: str, dest_path) -> bool:
@@ -178,11 +160,30 @@ class ChromeWatcher(QObject):
             pass
         return None
 
+    def _sync_habilitada(self) -> bool:
+        """#1 — la sincronización compartida solo está activa para la edición del día
+        siguiente (la que se arma). Al cargar una edición vieja, se desactiva."""
+        habil = True
+        try:
+            rutas = getattr(self._fs, "rutas", None)
+            if rutas is not None and hasattr(rutas, "es_edicion_maniana"):
+                habil = bool(rutas.es_edicion_maniana())
+        except Exception:
+            habil = True
+        # Log solo en transiciones, para no spamear el poll.
+        if habil != getattr(self, "_sync_estado_prev", None):
+            self._sync_estado_prev = habil
+            _log.info("Sincronización compartida %s (edición de mañana=%s)",
+                      "ACTIVADA" if habil else "DESACTIVADA", habil)
+        return habil
+
     def _sync_compartido(self) -> None:
         """Adopta el config.json compartido (secciones + límites de maqueta) si otra
         estación lo cambió (mtime check barato). Lecturas sin lock (snapshot atómico)."""
         from config.config import config_global
         from services.shared_config_service import read_shared
+        if not self._sync_habilitada():
+            return
         shared = self._shared_config_path()
         if shared is None:
             return
@@ -255,6 +256,8 @@ class ChromeWatcher(QObject):
         from config.config import config_global
         from services.shared_config_service import update_shared
         config_global.save_secciones(lista)
+        if not self._sync_habilitada():
+            return
         shared = self._shared_config_path()
         if shared is not None:
             nuevo = update_shared(shared, lambda d: {**d, "version": d.get("version", 1),
@@ -270,6 +273,8 @@ class ChromeWatcher(QObject):
         """Publica los límites de maqueta locales al config.json compartido (merge bajo lock)."""
         from config.config import config_global
         from services.shared_config_service import update_shared
+        if not self._sync_habilitada():
+            return
         shared = self._shared_config_path()
         if shared is None:
             return
@@ -359,9 +364,14 @@ class ChromeWatcher(QObject):
                 dest_name = src.name
             dest_path = dest_dir / dest_name
             shutil.copy2(src, dest_path)
-            # Convertir WebP a JPG en imágenes
+            # Toda imagen → JPG sin pérdida (WebP/PNG/… → JPG; los JPEG no se re-codifican).
             if src.name not in ("nota.txt", "nota.json"):
-                _convertir_webp_a_jpg(dest_path)
+                from services.file_service import convertir_a_jpg, firma_imagen
+                tam = dest_path.stat().st_size if dest_path.exists() else -1
+                _log.info("Chrome img copiada P%02d/%s: %s → %s (%d bytes) [%s]",
+                          pagina, dest_dir.name, src.name, dest_name, tam,
+                          firma_imagen(dest_path))
+                dest_path = convertir_a_jpg(dest_path)
 
         # Generar QR PNGs desde los links del cuerpo (igual que _scrape_core)
         try:

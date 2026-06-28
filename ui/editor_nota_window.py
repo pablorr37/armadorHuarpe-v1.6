@@ -1159,6 +1159,14 @@ class EditorNotaWindow(QMainWindow):
         panel = self._stories[0]
         try:
             self._spell = SpellService()
+            # Diccionario compartido en la raíz base (sync entre estaciones).
+            try:
+                base_root = getattr(self.controller.rutas, "base_root", None)
+                if base_root:
+                    self._spell.set_base_root(base_root)
+                    self._spell.merge_shared()
+            except Exception:
+                pass
             self._hl_bajada = SpellHighlighter(
                 panel.ed_bajada.document(), self._spell, "Bajada"
             )
@@ -1310,12 +1318,9 @@ class EditorNotaWindow(QMainWindow):
             data = json.loads(json_path.read_text(encoding="utf-8"))
         except Exception:
             return
-        epigrafes: dict[str, str] = {}
-        for img in data.get("imagenes", []):
-            archivo = img.get("archivo", "")
-            epi = img.get("epigrafe", "").strip()
-            if epi and archivo and epi != "NO HAY EPÍGRAFE":
-                epigrafes[archivo] = epi
+        # Matchear por stem: el JSON guarda .jpeg pero en disco quedan .jpg (conversión).
+        from services.foto_pagina_service import epigrafes_por_archivo_real
+        epigrafes = epigrafes_por_archivo_real(nota_dir, data.get("imagenes", []))
         self._fotos_browser.set_epigrafes(epigrafes)
 
     def _on_usar_epigrafe(self, texto: str) -> None:
@@ -1323,6 +1328,7 @@ class EditorNotaWindow(QMainWindow):
             return
         panel = self._stories[0]
         panel.ed_epigrafe.setText(texto)
+        panel.ed_epigrafe.setCursorPosition(0)   # leer el epígrafe desde el inicio
 
     # ------------------------------------------------------------------
     # Slots de campos (principal story)

@@ -341,3 +341,29 @@ class FotoPaginaService:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
         return h.hexdigest()
+
+
+def epigrafes_por_archivo_real(noticia_dir, imagenes) -> dict:
+    """Mapea epigrafe -> nombre de archivo REAL en disco, matcheando por *stem*
+    (sin extension, case-insensitive). Resuelve el desfasaje de extension cuando
+    las imagenes se convirtieron (p.ej. .jpeg del JSON -> .jpg en disco).
+    Devuelve {nombre_archivo_real: epigrafe}."""
+    import unicodedata as _ud
+    def _noacc(s):
+        return _ud.normalize("NFD", s or "").encode("ascii", "ignore").decode().upper().strip()
+    reales = {}
+    try:
+        for f in Path(noticia_dir).iterdir():
+            if f.is_file():
+                reales.setdefault(f.stem.lower(), f.name)
+    except Exception:
+        pass
+    out = {}
+    for img in (imagenes or []):
+        archivo = (img.get("archivo") or "").strip()
+        epi = (img.get("epigrafe") or "").strip()
+        if not (archivo and epi) or _noacc(epi) == "NO HAY EPIGRAFE":
+            continue
+        real = reales.get(Path(archivo).stem.lower(), archivo)
+        out[real] = epi
+    return out

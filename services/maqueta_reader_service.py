@@ -50,6 +50,12 @@ _AD_PREFIXES: dict[str, list[str]] = {
     "none":       ["vacia"],
 }
 
+# Maquetas especiales: secciones que usan UNA maqueta fija, sin patrón {tipo}{sufijo}.
+# Clave = sección normalizada (sin acentos, minúsculas); valor = stem del .qxp.
+_SECCION_MAQUETA_ESPECIAL: dict[str, str] = {
+    "escrache al bache": "EscracheAlBache",
+}
+
 _override_maquetas_dir: Path | None = None
 
 
@@ -109,6 +115,14 @@ def resolve_maqueta_name(
         objetivo = _normalizar(nombre_objetivo)
         return next((f.name for f in archivos if _normalizar(f.stem) == objetivo), None)
 
+    # Maqueta especial por sección (ignora el tipo de aviso). Ej.: "Escrache al Bache".
+    especial = _SECCION_MAQUETA_ESPECIAL.get(seccion_norm)
+    if especial:
+        hit = _buscar(especial)
+        if hit:
+            _log.debug("resolve_maqueta especial: %s (seccion=%s)", hit, seccion)
+            return hit
+
     if suffix:
         hit = _buscar(f"{aviso_tipo}{suffix}")
         if hit:
@@ -120,8 +134,14 @@ def resolve_maqueta_name(
         _log.debug("resolve_maqueta fallback: %s (tipo=%s, seccion=%s)", fallback, aviso_tipo, seccion)
         return fallback
 
-    _log.warning("resolve_maqueta: no se encontró plantilla para tipo='%s', seccion='%s' en %s",
-                 aviso_tipo, seccion, maquetas_dir)
+    # Último fallback: el archivo plano del tipo (ej. 'completa.qxp', 'vacia.qxp').
+    plano = _buscar(aviso_tipo)
+    if plano:
+        _log.debug("resolve_maqueta plano: %s (tipo=%s)", plano, aviso_tipo)
+        return plano
+
+    _log.debug("resolve_maqueta: no se encontró plantilla para tipo='%s', seccion='%s' en %s",
+               aviso_tipo, seccion, maquetas_dir)
     return None
 
 
@@ -196,6 +216,13 @@ def get_templates_for_page(pagina) -> list[str]:
             result.append(tpl)          # "completa.qxp" — no section suffix
         elif not restrict_section or _normalizar(suffix) in valid_norm:
             result.append(tpl)
+
+    # Maqueta especial de la sección (no sigue el patrón {tipo}{sufijo}): incluirla.
+    especial = _SECCION_MAQUETA_ESPECIAL.get(seccion_norm)
+    if especial:
+        for tpl in all_tpls:
+            if _normalizar(tpl.replace(".qxp", "")) == _normalizar(especial) and tpl not in result:
+                result.append(tpl)
 
     return result if result else all_tpls
 

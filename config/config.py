@@ -59,6 +59,7 @@ class Config:
             "bajada_limit":             "220",
             "epigrafe_principal_limit": "120",
             "cuerpo_warning_margin":    "50",
+            "intertitulo_deduccion":    "35",
             # Límites de recursos
             "textual_sin_foto_limit":   "220",
             "textual_con_foto_limit":   "320",

@@ -988,10 +988,16 @@ class ArmadorController:
             meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO",
                      "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"]
             m = _re.search(r"(\d{1,2})\s+DE\s+([A-ZÁÉÍÓÚ]+)\s+DE\s+(\d{4})", base_dir.name.upper())
-            if m and getattr(self.rutas, "pdf_root", None):
-                dia = int(m.group(1)); mes_str = m.group(2)
-                if mes_str in meses:
-                    mes_idx = meses.index(mes_str) + 1
+            if m and m.group(2) in meses:
+                dia = int(m.group(1)); mes_str = m.group(2); anio = int(m.group(3))
+                mes_idx = meses.index(mes_str) + 1
+                # #1 — fecha de la edición cargada (para gatear la sincronización).
+                import datetime as _dt
+                try:
+                    self.rutas.fecha_edicion = _dt.date(anio, mes_idx, dia)
+                except ValueError:
+                    self.rutas.fecha_edicion = None
+                if getattr(self.rutas, "pdf_root", None):
                     pdf_day = _Path(self.rutas.pdf_root) / mes_str / f"{dia}-{mes_idx}"
                     self.rutas.pdf_output_dir = pdf_day
                     self.rutas.pdf_ok_dir = pdf_day / "OK"
@@ -1708,6 +1714,32 @@ class ArmadorController:
         return s
 
 
+    def composicion_pagina(self, numero: int, subfolder: Optional[str] = None) -> dict:
+        """Resumen de composición de la nota principal de la página (para el overlay del QR
+        al pegar y el aviso final del script de pegado):
+        {textual: <tipo|None>, dato: bool, numero: bool, foto_tipo: str, firma: bool}."""
+        comp = {"textual": None, "dato": False, "numero": False,
+                "foto_tipo": "", "firma": False}
+        try:
+            for nota in self.file_service.get_notas(numero):
+                if (nota.get("rol") or "").lower() != "principal":
+                    continue
+                jp = nota.get("json_path")
+                if not jp:
+                    break
+                nd = json.loads(jp.read_text(encoding="utf-8"))
+                tx = nd.get("textual")
+                comp["textual"] = (tx.get("tipo") if isinstance(tx, dict) else None) or None
+                dato = nd.get("dato")
+                comp["dato"] = bool(dato.strip()) if isinstance(dato, str) else bool(dato)
+                comp["numero"] = bool(nd.get("numero"))
+                comp["foto_tipo"] = (nd.get("foto_tipo") or "").strip()
+                comp["firma"] = bool(nd.get("firma_habilitada"))
+                break
+        except Exception as e:
+            _log.debug("composicion_pagina P%02d: %s", numero, e)
+        return comp
+
     def _preparar_data_pagina(self, numero: int, tiene_texto: bool = True,
                                subfolder: Optional[str] = None,
                                excluir_fotos: bool = False):
@@ -1759,7 +1791,9 @@ class ArmadorController:
                         _log.debug("aviso_path: %s", aviso_path)
                         path_str = self._forzar_z_desde_unc(str(aviso_path))
                         _log.debug("path_str: %s", path_str)
-                        avisos.append({"tipo": tipo, "path": str(path_str)})
+                        from services.file_service import espacio_color as _espacio
+                        avisos.append({"tipo": tipo, "path": str(path_str),
+                                       "espacio": _espacio(aviso_path)})
             except Exception:
                 avisos = []
 
@@ -1767,19 +1801,53 @@ class ArmadorController:
             fotos_data: list = []
             if not excluir_fotos:
                 try:
+                    from pathlib import Path as _PP
+                    from services.file_service import firma_imagen as _firma
+                    from services.file_service import espacio_color as _espacio
                     mat = self._mat()
                     if mat:
+                        sel_path = self.foto_pagina_service._base_dir(
+                            numero, subfolder, mat) / "fotos_seleccionadas.json"
                         fotos_estado = self.foto_pagina_service.cargar(
                             numero, subfolder, mat
                         )
-                        for f in fotos_estado.get("fotos", []):
+                        seleccion = fotos_estado.get("fotos", [])
+                        _log.info("Fotos P%02d: subfolder=%s, excluir_fotos=%s, "
+                                  "seleccionadas=%d (%s)",
+                                  numero, subfolder, excluir_fotos, len(seleccion), sel_path)
+                        for f in seleccion:
                             path_str = self._forzar_z_desde_unc(f["path"])
+                            p = _PP(path_str)
+                            if not p.exists():
+                                # Resiliencia: buscar por stem en el subfolder (.jpeg↔.jpg,
+                                # renombres menores) antes de descartar la foto.
+                                alt = None
+                                try:
+                                    for cand in p.parent.iterdir():
+                                        if (cand.is_file()
+                                                and cand.stem.lower() == p.stem.lower()):
+                                            alt = cand
+                                            break
+                                except Exception:
+                                    alt = None
+                                if alt is not None:
+                                    _log.info("Foto P%02d resuelta por stem: %s → %s",
+                                              numero, p.name, alt.name)
+                                    path_str, p = str(alt), alt
+                                else:
+                                    _log.warning("Foto P%02d seleccionada NO está en disco "
+                                                 "(se omite): %s", numero, path_str)
+                                    continue
+                            _log.info("Foto P%02d servida [%s]: %s [%s]",
+                                      numero, f.get("rol"), p.name, _firma(p))
                             fotos_data.append({
                                 "path":   path_str,
                                 "nombre": f["nombre"],
                                 "orden":  f["orden"],
                                 "rol":    f["rol"],
+                                "espacio": _espacio(p),
                             })
+                        _log.info("Fotos P%02d servidas al pegado: %d", numero, len(fotos_data))
                 except Exception as e:
                     _log.warning("No se pudieron leer fotos_seleccionadas: %s", e)
 
@@ -1818,6 +1886,27 @@ class ArmadorController:
                     except Exception as e_txt:
                         _log.warning("No se pudo leer TXT de nota %s: %s", base_name, e_txt)
 
+            # --- #7: adjuntar el epígrafe de cada foto (maquetas multi-imagen, p.ej.
+            #     Escrache al Bache). Se cruza por nombre de archivo con las imágenes
+            #     detectadas en la nota principal. ---
+            try:
+                from pathlib import Path as _P
+                # Matchear por STEM (sin extensión): el JSON guarda .jpeg pero las fotos
+                # en disco/fotos_seleccionadas quedan .jpg tras la conversión.
+                epi_por_stem: dict = {}
+                for nd in notas_data:
+                    if (nd.get("rol") or nd.get("tipo") or "").lower() == "principal":
+                        for im in (nd.get("imagenes") or []):
+                            arch = (im.get("archivo") or "").strip()
+                            epi = (im.get("epigrafe") or "").strip()
+                            if arch and epi and "NO HAY EP" not in epi.upper():
+                                epi_por_stem[_P(arch).stem.lower()] = epi
+                        break
+                for f in fotos_data:
+                    f["epigrafe"] = epi_por_stem.get(_P(f.get("nombre", "")).stem.lower(), "")
+            except Exception as e:
+                _log.debug("No se pudo adjuntar epígrafe por foto P%02d: %s", numero, e)
+
             # --- Maqueta: qxp en materiales si existe; si no, la resuelta por sección/aviso ---
             nombre_maqueta = ""
             maqueta_path_str = ""
@@ -1849,6 +1938,7 @@ class ArmadorController:
                 "avisos":             avisos,
                 "fotos":              fotos_data,
                 "notas":              notas_data,
+                "composicion":        self.composicion_pagina(numero, subfolder),
                 "foto_box_principal": config_global.maqueta_config.get("foto_box_principal", "Box369"),
             }
 
@@ -2323,17 +2413,8 @@ class ArmadorController:
                             
                         )
 
-                    # ------- Encolar scraping si hace falta -------
-                    txt = self.file_service.obtener_txt(numero, idx)
-                    ya_tiene_txt = bool(txt and txt.exists() and txt.stat().st_size > 0)
-
-                    if aviso != "COMPLETA" and not ya_tiene_txt:
-                        suf = chr(97 + idx)
-                        _log.debug("Encolando scraping P%02d%s → %s", numero, suf, link)
-                        try:
-                            self.enqueue_scrape(numero, link)
-                        except Exception as e:
-                            _log.error("No se pudo encolar scraping para P%02d: %s", numero, e)
+                    # NOTA: "Procesar" del MONO solo persiste (sección, links, aviso, tapa,
+                    # mono_extra). El scraping ya NO se encola desde acá.
 
         # ---------------- Fin de líneas ----------------
         self.refrescar_avisos_desde_ini()

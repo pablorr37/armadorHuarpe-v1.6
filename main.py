@@ -15,11 +15,15 @@ _log.info("Aplicación iniciada.")
 
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QPalette, QColor
-from PyQt5.QtCore import QSharedMemory
+from PyQt5.QtCore import QSharedMemory, QLoggingCategory
 from controller.controller import ArmadorController
 from ui.main_window import MainWindow
 
 if __name__ == "__main__":
+    # Silenciar el spam "qt.gui.icc: Unsupported ICC profile class" al cargar
+    # imágenes con perfil ICC de impresora (CMYK) o TIFF de Photoshop. Es benigno.
+    QLoggingCategory.setFilterRules("qt.gui.icc=false")
+
     app = QApplication(sys.argv)
 
     # === Instancia única (bloqueo duro) ===

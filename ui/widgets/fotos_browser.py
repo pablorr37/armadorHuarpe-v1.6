@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from pathlib import Path
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap
@@ -7,7 +8,24 @@ from PyQt5.QtWidgets import (
     QFrame, QSizePolicy, QMenu, QAction, QMessageBox, QDialog, QPushButton
 )
 
+from utils.app_logger import get_logger
+
+_log = get_logger(__name__)
+
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+
+# Convención de rename_material_image: "<nombre> para la NN.ext".
+_RENOMBRADA_RE = re.compile(r" para la \d{1,2}$", re.IGNORECASE)
+
+
+def _tier_no_seleccionada(name: str) -> int:
+    """Tier de orden para fotos NO seleccionadas: 0=renombrada, 1=principal_, 2=resto."""
+    stem = name.rsplit(".", 1)[0]
+    if _RENOMBRADA_RE.search(stem):
+        return 0
+    if name.lower().startswith("principal_"):
+        return 1
+    return 2
 
 
 class _BoundFPS:
@@ -60,6 +78,11 @@ class _BoundFPS:
         estado = self.cargar()
         fotos = estado.get("fotos", [])
         validas = [f for f in fotos if self._nombre(f["path"]) in nombres_presentes]
+        podadas = [self._nombre(f["path"]) for f in fotos
+                   if self._nombre(f["path"]) not in nombres_presentes]
+        if podadas:
+            _log.info("sincronizar P%s/%s: podadas %d foto(s) ausentes en disco: %s",
+                      self._pagina, self._subfolder, len(podadas), podadas)
         validas.sort(key=lambda f: f.get("orden", 0))
         if len(validas) != len(fotos):
             self._renumerar_y_guardar(estado, validas)
@@ -349,10 +372,26 @@ class FotosBrowser(QWidget):
                 orden_map = self._fps.sincronizar({img.name for img in imgs})
             except Exception:
                 orden_map = {}
+            # #8a — si hay UNA sola foto y ninguna marcada, aplicarla como principal.
+            if len(imgs) == 1 and not orden_map:
+                try:
+                    self._fps.seleccionar(imgs[0], rol="principal")
+                    self._fps.guardar()
+                    orden_map = self._fps.sincronizar({imgs[0].name})
+                    _log.info("Auto-principal aplicada (única foto en carpeta): %s",
+                              imgs[0].name)
+                except Exception as exc:
+                    _log.warning("No se pudo aplicar auto-principal: %s", exc)
         total_sel = len(orden_map)
 
-        # Las fotos seleccionadas van primero por orden (principal=0); el resto por nombre. (#8b)
-        imgs.sort(key=lambda f: (orden_map.get(f.name, 9999), f.name))
+        # Orden del visor: (0) seleccionadas por su orden (principal=0, segunda=1…);
+        # luego no seleccionadas en tiers: renombradas → principal_ → resto, c/u alfabético.
+        def _orden_key(f):
+            o = orden_map.get(f.name)
+            if o is not None:
+                return (0, o, "")
+            return (1, _tier_no_seleccionada(f.name), f.name.lower())
+        imgs.sort(key=_orden_key)
 
         for img in imgs:
             orden = orden_map.get(img.name)

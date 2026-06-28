@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt, QRectF, QTimer
+from PyQt5.QtCore import Qt, QRectF, QTimer, QThread, QObject, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PyQt5.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QApplication,
@@ -92,6 +92,51 @@ def pdf_to_pixmap(path: str, scale_factor: int = 3) -> QPixmap:
 
 
 # ============================================================
+# 🔹 Worker: resuelve y rasteriza el aviso en un HILO (sin Qt pesado)
+# ============================================================
+class _AvisoWorker(QObject):
+    """Resuelve el archivo de aviso y lo rasteriza a PNG (pdf_to_png/_eps_to_png son
+    thread-safe). No crea QPixmap (eso queda para el hilo GUI)."""
+    done = pyqtSignal(object)   # dict resultado
+
+    def __init__(self, file_service, numero, nombre, tipo, old_mtime, cache_dir):
+        super().__init__()
+        self._fs = file_service
+        self._numero = numero
+        self._nombre = nombre
+        self._tipo = tipo
+        self._old_mtime = old_mtime
+        self._cache_dir = cache_dir
+
+    def run(self):
+        res = {"numero": self._numero, "status": "none"}
+        try:
+            f = self._fs.resolver_aviso_local(self._numero, self._nombre, tipo_aviso=self._tipo)
+            if not f or not f.exists():
+                self.done.emit(res); return
+            mtime = f.stat().st_mtime
+            if self._old_mtime and mtime == self._old_mtime:
+                self.done.emit({"numero": self._numero, "status": "cache", "mtime": mtime}); return
+            ext = f.suffix.lower()
+            if ext == ".pdf":
+                png = pdf_to_png(f, self._cache_dir, scale_factor=3)
+                if png:
+                    self.done.emit({"numero": self._numero, "status": "img",
+                                    "path": str(png), "mtime": mtime}); return
+            elif ext == ".eps":
+                png = _eps_to_png(f, self._cache_dir)
+                if png:
+                    self.done.emit({"numero": self._numero, "status": "img",
+                                    "path": str(png), "mtime": mtime}); return
+            else:
+                self.done.emit({"numero": self._numero, "status": "img",
+                                "path": str(f), "mtime": mtime}); return
+            self.done.emit(res)
+        except Exception as e:
+            self.done.emit({"numero": self._numero, "status": "error", "msg": str(e)})
+
+
+# ============================================================
 # 🔹 Visor con zoom (Ctrl + Rueda)
 # ============================================================
 class ZoomableGraphicsView(QGraphicsView):
@@ -138,19 +183,96 @@ class MaquetaWidget(QWidget):
     # Asignar página y cargar aviso fuera del paintEvent
     # --------------------------------------------------------
     def set_pagina(self, pagina):
+        self._stop_aviso_thread()
         self.pagina = pagina
         self._last_pixmap = None
         self._last_pixmap_pdf = None
-        self._pdf_mtime = None      
+        self._pdf_mtime = None
         self._loading = False
         self.update()
         if pagina:
-            # dispara carga asincrónica sin bloquear la UI
-            QTimer.singleShot(0, self.load_aviso_async)
+            # Aviso en hilo separado (con cartel "Cargando aviso…").
+            QTimer.singleShot(0, self._start_aviso_load)
             entry = self.controller.file_service.read_page_entry(pagina.numero)
             estado = (entry.get("estado") or "").strip().lower()
             if estado in ("pdf", "ok"):
                 QTimer.singleShot(0, self.load_pdf_async)
+
+    # --------------------------------------------------------
+    # Carga del aviso en HILO separado (#10)
+    # --------------------------------------------------------
+    def _tipo_aviso(self) -> str:
+        if getattr(self.pagina, "aviso_full", False):       return "COMPLETA"
+        if getattr(self.pagina, "aviso_half", False):       return "MEDIA"
+        if getattr(self.pagina, "aviso_footer", False):     return "PIE"
+        if getattr(self.pagina, "aviso_robapagina", False): return "ROBAPAGINA"
+        return ""
+
+    def _stop_aviso_thread(self):
+        th = getattr(self, "_aviso_thread", None)
+        if th is not None:
+            try:
+                th.quit(); th.wait(50)
+            except Exception:
+                pass
+        self._aviso_thread = None
+        self._aviso_worker = None
+
+    def _start_aviso_load(self):
+        if not self.pagina:
+            return
+        tipo = self._tipo_aviso()
+        if not tipo:
+            # Sin aviso configurado → placeholder, sin hilo ni cartel.
+            self._loading = False
+            self.update()
+            return
+        nombre = getattr(self.pagina, "aviso_nombre", "")
+        old_mtime = getattr(self.pagina, "aviso_mtime", None)
+        self._loading = True
+        self.update()
+        th = QThread(self)
+        wk = _AvisoWorker(self.controller.file_service, self.pagina.numero,
+                          nombre, tipo, old_mtime, Path("cache_eps"))
+        wk.moveToThread(th)
+        th.started.connect(wk.run)
+        wk.done.connect(self._on_aviso_done)
+        wk.done.connect(th.quit)
+        th.finished.connect(th.deleteLater)
+        self._aviso_thread = th
+        self._aviso_worker = wk
+        th.start()
+
+    def _on_aviso_done(self, res: dict):
+        # Ignorar resultados de una página que ya no es la activa.
+        if not self.pagina or res.get("numero") != self.pagina.numero:
+            return
+        self._loading = False
+        status = res.get("status")
+        if status == "cache":
+            cached = getattr(self.pagina, "aviso_pixmap", None)
+            self._last_pixmap = cached if (cached and not cached.isNull()) else None
+        elif status == "img":
+            pm = QPixmap(res.get("path", ""))
+            if pm and not pm.isNull():
+                self._last_pixmap = pm
+                self.pagina.aviso_pixmap = pm
+                self.pagina.aviso_mtime = res.get("mtime")
+            else:
+                self._last_pixmap = None
+                self.pagina.aviso_pixmap = None
+        else:
+            self._last_pixmap = None
+            self.pagina.aviso_pixmap = None
+        self.update()
+        # Sincroniza el botón de la grilla si existe
+        try:
+            if hasattr(self.controller, "main_window"):
+                boton = getattr(self.controller.main_window, "boton_paginas", {}).get(self.pagina.numero)
+                if boton:
+                    boton.update()
+        except Exception:
+            pass
 
 
     # --------------------------------------------------------
@@ -327,6 +449,12 @@ class MaquetaWidget(QWidget):
                 painter.drawPixmap(x, y, scaled)
                 return
 
+            # --- aviso cargándose en hilo separado (#10) ---
+            if getattr(self, "_loading", False):
+                painter.setPen(QColor("#e2e8f0"))
+                f = painter.font(); f.setBold(True); f.setPointSize(11); painter.setFont(f)
+                painter.drawText(rect, Qt.AlignCenter, "Cargando aviso…")
+                return
 
             # --- si hay pixmap cacheado (aviso real) ---
             if self._last_pixmap and not self._last_pixmap.isNull():

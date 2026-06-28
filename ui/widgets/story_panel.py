@@ -198,6 +198,8 @@ class StoryPanel(QWidget):
         self._cuerpo_box_limit: int = 0
         self._deduction_external: int = 0
         self._firma_deduccion: int = mq.get("firma_deduccion", 275)
+        # #7 — cada intertítulo (línea que empieza con ##) ocupa ~1 línea extra.
+        self._intertitulo_deduccion: int = mq.get("intertitulo_deduccion", 35)
         self._story_type: str = ""
 
         lay = QVBoxLayout(self)
@@ -440,8 +442,13 @@ class StoryPanel(QWidget):
         self.textChanged.emit()
 
     def _update_cuerpo_counter(self):
-        """Recalcula el límite disponible para el cuerpo descontando bajada, firma y recursos externos."""
-        cuerpo_text = self.ed_cuerpo.toPlainText().replace('\n', '')
+        """Recalcula el límite disponible para el cuerpo descontando bajada, firma,
+        recursos externos e intertítulos (## → una línea extra cada uno)."""
+        raw = self.ed_cuerpo.toPlainText()
+        cuerpo_text = raw.replace('\n', '')
+        # #7 — contar intertítulos (líneas cuyo texto empieza con ##) → descuento.
+        n_inter = sum(1 for ln in raw.splitlines() if ln.strip().startswith("##"))
+        inter_ded = n_inter * self._intertitulo_deduccion
         if self._cuerpo_box_limit <= 0:
             self.cnt_cuerpo.set_limit(0)
             self.cnt_cuerpo.update_count(cuerpo_text)
@@ -449,7 +456,8 @@ class StoryPanel(QWidget):
             return
         bajada_len = len(self.ed_bajada.toPlainText().strip())
         firma_ded  = self._firma_deduccion if self.chk_firma.isChecked() else 0
-        effective  = max(0, self._cuerpo_box_limit - bajada_len - firma_ded - self._deduction_external)
+        effective  = max(0, self._cuerpo_box_limit - bajada_len - firma_ded
+                         - self._deduction_external - inter_ded)
         self.cnt_cuerpo.set_limit(effective)
         self.cnt_cuerpo.update_count(cuerpo_text)
         self._refresh_cuerpo_style(self.cnt_cuerpo.state)
@@ -569,6 +577,7 @@ class StoryPanel(QWidget):
                 self.title_grid.set_text(nota.get("titulo", ""))
                 self.ed_bajada.setPlainText(nota.get("bajada", ""))
                 self.ed_epigrafe.setText(nota.get("epigrafe", ""))
+                self.ed_epigrafe.setCursorPosition(0)   # leer el epígrafe desde el inicio
                 self.ed_cuerpo.setPlainText(_normalizar_cuerpo(nota.get("cuerpo", "")))
                 self._apply_body_display()   # reaplica interlineado tras cargar texto
                 self._update_cuerpo_counter()
@@ -588,6 +597,7 @@ class StoryPanel(QWidget):
         self.title_grid.set_text(titulo)
         self.ed_bajada.setPlainText(bajada)
         self.ed_epigrafe.setText(epigrafe)
+        self.ed_epigrafe.setCursorPosition(0)   # leer el epígrafe desde el inicio
         self.ed_cuerpo.setPlainText(" /// ".join(resto))
         self._apply_body_display()   # reaplica interlineado tras cargar texto
         self._update_cuerpo_counter()
@@ -666,6 +676,7 @@ class StoryPanel(QWidget):
         self.title_grid.set_text(data.get("titulo", ""))
         self.ed_bajada.setPlainText(data.get("bajada", ""))
         self.ed_epigrafe.setText(data.get("epigrafe", ""))
+        self.ed_epigrafe.setCursorPosition(0)   # leer el epígrafe desde el inicio
         self.ed_cuerpo.setPlainText(_normalizar_cuerpo(data.get("cuerpo", "")))
         self.ed_firma.setText(data.get("firma", ""))
         self.chk_firma.setChecked(data.get("firma_habilitada", bool(data.get("firma", ""))))

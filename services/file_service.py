@@ -34,6 +34,82 @@ def _eliminar_definitivo(path):
         os.remove(p)
 
 
+# --- info y conversión de imágenes (helpers de módulo) ---
+def firma_imagen(path) -> str:
+    """Firma corta de una imagen para logging: 'RGB/JPEG prog=0 adobeT=None'
+    (mode/format/progresivo/adobe_transform). Import PIL perezoso; no rompe si falla."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return "%s/%s prog=%s adobeT=%s" % (
+                im.mode, im.format or "?",
+                im.info.get("progression", 0),
+                im.info.get("adobe_transform"),
+            )
+    except Exception as exc:
+        return f"<ilegible: {exc}>"
+
+
+def espacio_color(path) -> str:
+    """Espacio de color de una imagen raster: 'RGB' | 'CMYK' | 'GRIS' | '?'.
+    '?' para no-raster (PDF/EPS) o ilegibles. Import PIL perezoso."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            mode = im.mode
+        if mode == "CMYK":
+            return "CMYK"
+        if mode in ("L", "LA", "1", "I", "I;16"):
+            return "GRIS"
+        if mode in ("RGB", "RGBA", "P", "YCbCr"):
+            return "RGB"
+        return mode or "?"
+    except Exception:
+        return "?"
+
+
+def convertir_a_jpg(path) -> Path:
+    """Convierte CUALQUIER imagen (WebP, PNG, BMP, GIF, TIFF…) a JPG sin pérdida apreciable
+    (quality=100, subsampling=0 / 4:4:4) y aplanando transparencia sobre blanco.
+    Si el archivo YA es JPEG no lo re-codifica (cero pérdida): solo normaliza la extensión a
+    .jpg si hace falta. Devuelve el path final (.jpg), o el original si algo falla."""
+    path = Path(path)
+    try:
+        from PIL import Image
+        out = None
+        with Image.open(path) as img:
+            fmt = (img.format or "").upper()
+            if fmt != "JPEG":
+                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                    rgba = img.convert("RGBA")
+                    bg = Image.new("RGB", rgba.size, (255, 255, 255))
+                    bg.paste(rgba, mask=rgba.split()[3])
+                    out = bg
+                else:
+                    out = img.convert("RGB")
+        dest = path.with_suffix(".jpg")
+        if out is not None:
+            out.save(dest, "JPEG", quality=100, subsampling=0)
+            if dest != path and path.exists():
+                path.unlink()
+            _log.info("Imagen %s → JPG sin pérdida: %s → %s", fmt or "?", path.name, dest.name)
+            return dest
+        # Ya era JPEG: no re-encodear. Normalizar extensión a .jpg si hace falta.
+        if path.suffix.lower() == ".jpg":
+            return path
+        if dest != path and dest.exists():
+            try:
+                dest.unlink()
+            except Exception:
+                pass
+        shutil.move(str(path), str(dest))
+        _log.info("JPEG normalizado a .jpg: %s → %s", path.name, dest.name)
+        return dest
+    except Exception as exc:
+        _log.warning("No se pudo convertir a JPG %s: %s", path.name, exc)
+        return path
+
+
 
 
 
@@ -504,23 +580,37 @@ class FileService:
         if ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
             return aviso_path
 
-        # Si es PDF o EPS → convertir a PNG temporal
+        # Si es PDF o EPS → rasterizar a PNG cacheado (sin poppler).
         if ext in (".pdf", ".eps"):
-            try:
-                from pdf2image import convert_from_path
-            except ImportError:
-                _log.warning("Falta dependencia 'pdf2image'; no puedo generar miniaturas de avisos.")
-                return None
-
             try:
                 cache_dir = Path.home() / "AppData" / "Local" / "ArmadorHuarpe" / "cache_avisos"
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 out_path = cache_dir / f"aviso_P{numero:02d}.png"
+                # Cache por mtime: no rasterizar en cada poll si el aviso no cambió.
+                if out_path.exists() and out_path.stat().st_mtime >= aviso_path.stat().st_mtime:
+                    return out_path
 
-                # Convertir solo la primera página (rápido)
-                pages = convert_from_path(str(aviso_path), dpi=100, first_page=1, last_page=1)
-                if pages:
-                    pages[0].save(str(out_path), "PNG")
+                if ext == ".pdf":
+                    # PyMuPDF (fitz): sin dependencia de poppler.
+                    import fitz
+                    doc = fitz.open(str(aviso_path))
+                    if doc.page_count == 0:
+                        return None
+                    pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    pix.save(str(out_path))
+                else:  # .eps → ghostscript
+                    import configparser as _cp
+                    cfg = _cp.ConfigParser()
+                    cfg.read(str(Config.CONFIG_FILE), encoding="utf-8")
+                    gs = cfg.get("APPS", "ghostscript", fallback="gswin64c")
+                    import subprocess
+                    subprocess.run(
+                        [gs, "-dEPSCrop", "-sDEVICE=pngalpha", "-r150",
+                         "-o", str(out_path), str(aviso_path)],
+                        check=True, capture_output=True,
+                    )
+                if out_path.exists():
+                    _log.info("Aviso PDF/EPS rasterizado P%02d → %s", numero, out_path.name)
                     return out_path
             except Exception as e:
                 _log.warning("No pude convertir aviso PDF/EPS P%02d: %s", numero, e)

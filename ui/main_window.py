@@ -407,10 +407,22 @@ class PageButton(QPushButton):
             painter.setPen(QColor("white"))
             painter.drawText(px, py, txt)
 
+        def _texto_sombra_wrap(rect_, txt, ptsize):
+            # Sección con word-wrap dentro de un rect (no se corta si es larga).
+            f = painter.font(); f.setBold(True); f.setPointSize(ptsize); painter.setFont(f)
+            flags = int(Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop)
+            painter.setPen(QColor("black"))
+            for dx in (-1, 1):
+                for dy in (-1, 1):
+                    painter.drawText(rect_.translated(dx, dy), flags, txt)
+            painter.setPen(QColor("white"))
+            painter.drawText(rect_, flags, txt)
+
         _texto_sombra(8, 20, f"P{self.numero:02d}", 13)
         seccion = (getattr(pagina, "seccion", "") or "").strip()
         if seccion:
-            _texto_sombra(8, 36, seccion, 10)
+            sec_rect = QRectF(8, 26, max(10, self.width() - 16), max(12, self.height() - 30))
+            _texto_sombra_wrap(sec_rect, seccion, 10)
 
         # Borde redondeado (conserva el aspecto actual) + foco
         painter.setBrush(Qt.NoBrush)
@@ -724,10 +736,9 @@ class _AjustesRadialMenu(QWidget):
                 self._habilitar_item(w)
             return  # no cerrar: el usuario puede clickear el compañero
 
-        # Retraer hacia el centro los demás íconos y la ✕; queda visible solo el elegido.
-        grp = self._make_retract([w for w in self._item_widgets if w is not chosen] + [self._close_btn])
-        self._anims.append(grp)
-        grp.start()
+        # Abrir el submenú modal SIN animar el retract antes (si se animara, el modal
+        # `exec_` congela la animación a mitad y deja íconos "fantasma" semi-transparentes
+        # —se notaba en "Eliminar"). Al volver del submenú, cerrar con la animación normal.
         self._submenu_open = True
         try:
             cb(anchor)
@@ -983,17 +994,15 @@ class MainWindow(QMainWindow):
         act_actualizar_paginas.triggered.connect(self.on_actualizar_paginas)
         acciones_menu.addAction(act_actualizar_paginas)
 
-        acciones_menu.addSeparator()
-
-        # Menú Acciones: Lanzar Chrome (debug) 
+        # "Abrir Chrome automatizado" — quitado del menú (#6); se conserva el objeto
+        # y el método por si se reusa, pero no se agrega a la barra.
         self.act_launch_chrome = QAction("Abrir Chrome automatizado", self)
         self.act_launch_chrome.triggered.connect(self.on_launch_chrome_debug)
-        acciones_menu.addAction(self.act_launch_chrome)
 
         layout = QHBoxLayout()
         main_widget.setLayout(layout)
         acciones_menu.addSeparator()
-        
+
         # Cargar mono   
         cargar_mono_action = QAction("Cargar mono", self)
         cargar_mono_action.triggered.connect(self.abrir_dialogo_mono)
@@ -1004,12 +1013,12 @@ class MainWindow(QMainWindow):
         cargar_avisos_excel_action.triggered.connect(self.on_cargar_avisos_excel)
         acciones_menu.addAction(cargar_avisos_excel_action)
 
-        # Módulo "Armar mono" (lista de notas del día)
+        # Módulo "Armar mono" (lista de notas del día) — quitado del menú (#6);
+        # se conserva el objeto y el método (panel/toggle siguen existiendo).
         self.action_armar_mono = QAction("Armar mono (lista de notas)", self)
         self.action_armar_mono.setCheckable(True)
         self.action_armar_mono.setChecked(False)
         self.action_armar_mono.triggered.connect(self.on_toggle_armar_mono)
-        acciones_menu.addAction(self.action_armar_mono)
 
 
 
@@ -1514,17 +1523,19 @@ class MainWindow(QMainWindow):
         self.boton_agregar_nota.hide()
 
         # Mover / Devolver — íconos circulares (estética radial), ~10% más grandes.
+        # Orden en la barra: Devolver (izq) y luego Mover (der).
         self.boton_mover = CircleIconButton(
             QPixmap(resource_path("ui/assets/adelante.png")), "Mover", icon_px=32)
         self.boton_mover.clicked.connect(self.on_mover)
         self.boton_mover.set_enabled(False)
-        toolbar.addWidget(self.boton_mover)
 
         self.boton_devolver = CircleIconButton(
             QPixmap(resource_path("ui/assets/atras.png")), "Devolver", icon_px=32)
         self.boton_devolver.clicked.connect(self.on_devolver)
         self.boton_devolver.set_enabled(False)
+
         toolbar.addWidget(self.boton_devolver)
+        toolbar.addWidget(self.boton_mover)
 
 
 
@@ -1572,8 +1583,8 @@ class MainWindow(QMainWindow):
         self._poll_worker = None
         self._poll_running = False
 
-        # --- Conexión automática a la base 2s después de iniciar ---
-        QTimer.singleShot(2000, self._conectar_base_auto)
+        # --- Conexión automática a la base 1.5s después de iniciar ---
+        QTimer.singleShot(1500, self._conectar_base_auto)
 
 
         # Estado de sesión: arrancamos en reposo
@@ -1863,6 +1874,9 @@ class MainWindow(QMainWindow):
             if th is not None and th.isRunning():
                 th.quit()
                 th.wait(3000)
+        except RuntimeError:
+            # El QThread ya fue destruido por Qt (carrera benigna al cerrar).
+            _log.debug("Poll thread ya destruido al cerrar.")
         except Exception as e:
             _log.warning("[WARN] Al cerrar poll thread: %s", e)
 
@@ -2101,6 +2115,14 @@ class MainWindow(QMainWindow):
     def _on_nota_editada(self, numero: int):
         self.mostrar_fragmentos(numero)
         self.colorear_paginas()
+        # #6 — refrescar el pin de foto principal al instante (no esperar al poll).
+        if numero == getattr(self, "pagina_activa", None):
+            try:
+                self._cargar_fotos_estado()
+                self._refrescar_panel_fotos()
+                self._refrescar_visor_seleccion()
+            except Exception as e:
+                _log.debug("refresco de fotos tras editar P%02d: %s", numero, e)
         self._registrar_trabajo(numero, "Editó con el editor")
 
     def _accion_descartar_para_armar(self, numero: int):
@@ -2517,15 +2539,41 @@ class MainWindow(QMainWindow):
                       if not p.stem.startswith("original_"))
 
     def _menu_seccion(self, numero: int) -> QMenu:
+        from PyQt5.QtWidgets import QWidgetAction, QListWidget, QListWidgetItem
         pag = self.controller.gestor_paginas.obtener_pagina(numero)
         m = QMenu(self); m.setStyleSheet(_AJUSTES_MENU_QSS)
         seccion_actual = (getattr(pag, "seccion", "") or "").strip()
-        for opcion in self._get_secciones_config():
-            act = QAction(opcion, self)
+
+        secciones = self._get_secciones_config()
+        # Lista con scrollbar (si no entra en el viewport, aparece la barra).
+        lista = QListWidget()
+        lista.setStyleSheet(
+            "QListWidget{background:#1e293b;color:#e2e8f0;border:none;outline:0;"
+            "font-size:12px;}"
+            "QListWidget::item{padding:4px 10px;}"
+            "QListWidget::item:selected,QListWidget::item:hover{background:#e7885f;color:#fff;}"
+        )
+        for opcion in secciones:
+            it = QListWidgetItem(opcion)
+            it.setData(Qt.UserRole, opcion)
             if seccion_actual and opcion.lower() == seccion_actual.lower():
-                act.setCheckable(True); act.setChecked(True)
-            act.triggered.connect(lambda _, o=opcion: self._accion_set_seccion(numero, o))
-            m.addAction(act)
+                f = it.font(); f.setBold(True); it.setFont(f)
+                it.setText("• " + opcion)
+            lista.addItem(it)
+        row_h = lista.sizeHintForRow(0) if secciones else 24
+        visibles = min(len(secciones) or 1, 20)
+        lista.setFixedHeight(max(1, row_h) * visibles + 6)
+        lista.setMinimumWidth(190)
+
+        def _on_click(item):
+            m.close()
+            self._accion_set_seccion(numero, item.data(Qt.UserRole))
+        lista.itemClicked.connect(_on_click)
+
+        wa = QWidgetAction(m)
+        wa.setDefaultWidget(lista)
+        m.addAction(wa)
+
         if seccion_actual:
             m.addSeparator()
             act_clear = QAction("Limpiar sección", self)
@@ -2747,17 +2795,21 @@ class MainWindow(QMainWindow):
 
         px = lambda name: QPixmap(resource_path(f"ui/assets/{name}"))
         items = [
-            (px("nueva.png"),       "Nueva noticia",   lambda a: _show(self._menu_nueva_noticia, a)),
+            # #5 — orden de íconos para que, leídos en sentido antihorario desde el
+            # tope, queden: Asignar → Pegar en Quark → Nueva → Eliminar (sin tocar el
+            # ángulo). Los slots 0 (tope) y 9/8/7 (vecinos antihorarios) llevan las
+            # acciones; 1–6 quedan igual.
+            (px(asignar_icon),      asignar_txt,       asignar_cb, asignar_enabled,   # idx 0 (tope)
+             ["Pegar en Quark"] if asignar_txt == "Asignar" else []),
             (px("seccion.png"),     "Sección",         lambda a: _show(self._menu_seccion, a)),
             (px("aviso.png"),       "Configurar aviso", lambda a: _show(self._menu_avisos, a)),
             (px("asignar-aviso.png"), "Asignar aviso", lambda a: self._accion_asignar_aviso_archivo(numero), tiene_aviso_tipo),
             (px("enroque.png"),     "Enrocar páginas", lambda a: _show(self._menu_enrocar, a)),
             (px("foto_tapa.png"),   "Foto de tapa",    lambda a: _toggle_tapa("tapa_foto", self._accion_marcar_tapa_foto)),
             (px("titulo_tapa.png"), "Título de tapa",  lambda a: _toggle_tapa("tapa_titulo", self._accion_marcar_tapa_titulo)),
-            (px("pegar.png"),       "Pegar en Quark",  lambda a: self._accion_pegar_quark(numero), puede_pegar),
-            (px(asignar_icon),      asignar_txt,       asignar_cb, asignar_enabled,
-             ["Pegar en Quark"] if asignar_txt == "Asignar" else []),
-            (px("borrar.png"),      "Eliminar",        lambda a: _show(self._menu_eliminar, a), puede_eliminar),
+            (px("borrar.png"),      "Eliminar",        lambda a: _show(self._menu_eliminar, a), puede_eliminar),   # idx 7
+            (px("nueva.png"),       "Nueva noticia",   lambda a: _show(self._menu_nueva_noticia, a)),              # idx 8
+            (px("quark.png"),       "Pegar en Quark",  lambda a: self._accion_pegar_quark(numero), puede_pegar),   # idx 9
         ]
         # Una sola instancia a la vez: cerrar el menú anterior con su animación
         # (con WA_DeleteOnClose se autodestruye al terminar). Evita instancias
@@ -3303,12 +3355,9 @@ class MainWindow(QMainWindow):
                 return
             import json as _json
             data = _json.loads(json_path.read_text(encoding="utf-8"))
-            epigrafes: dict = {}
-            for img in data.get("imagenes", []):
-                archivo = img.get("archivo", "")
-                epi = img.get("epigrafe", "").strip()
-                if epi and archivo and epi != "NO HAY EPÍGRAFE":
-                    epigrafes[archivo] = epi
+            # Matchear por stem: el JSON guarda .jpeg pero en disco quedan .jpg (conversión).
+            from services.foto_pagina_service import epigrafes_por_archivo_real
+            epigrafes = epigrafes_por_archivo_real(noticia_dir, data.get("imagenes", []))
             self.visor_panel.set_epigrafes(epigrafes)
         except Exception:
             self.visor_panel.set_epigrafes({})
@@ -5440,6 +5489,7 @@ class MainWindow(QMainWindow):
         pagina = self.pagina_activa
         indice = getattr(self, "_noticia_index", 0)
         subfolder = self._subfolder_activo()
+        _log.info("on_pegar: P%02d indice=%s subfolder=%s", pagina, indice, subfolder)
 
         cfg = configparser.ConfigParser()
         cfg.read(str(Config.CONFIG_FILE), encoding="utf-8")
@@ -5483,6 +5533,8 @@ class MainWindow(QMainWindow):
         excluir_fotos = False
         sin_editar = self.controller.fotos_sin_editar(pagina, subfolder)
         if sin_editar:
+            _log.info("on_pegar P%02d: %d foto(s) sin editar → diálogo de confirmación",
+                      pagina, len(sin_editar))
             nombres = "\n".join(f"  • {Path(p).name}" for p in sin_editar)
             msg = (
                 f"Las siguientes fotos seleccionadas no han sido editadas "
@@ -5500,9 +5552,13 @@ class MainWindow(QMainWindow):
             mb.exec_()
             clicked = mb.clickedButton()
             if clicked == btn_no:
+                _log.info("on_pegar P%02d: usuario canceló el pegado", pagina)
                 return
             if clicked == btn_solo_txt:
                 excluir_fotos = True
+                _log.info("on_pegar P%02d: 'Sólo texto/aviso' → excluir_fotos=True", pagina)
+            else:
+                _log.info("on_pegar P%02d: 'Sí, pegar todo' → se incluyen las fotos", pagina)
 
         # ── Pegado ────────────────────────────────────────────────────────────
         if version_quark == "Quark 8":
@@ -5512,6 +5568,8 @@ class MainWindow(QMainWindow):
             flag_path.write_text("OK", encoding="utf-8")
             _log.info("Flag 'OK' creado en %s", flag_path)
         else:
+            _log.info("on_pegar P%02d: pegando en Quark (subfolder=%s, excluir_fotos=%s)",
+                      pagina, subfolder, excluir_fotos)
             self.controller.pegar_en_quark(
                 pagina, indice, texto=texto,
                 subfolder=subfolder, excluir_fotos=excluir_fotos
@@ -5772,27 +5830,33 @@ class MainWindow(QMainWindow):
 
         n = self.pagina_activa
 
-        # Fotos marcadas como principal en el editor (fotos_seleccionadas.json)
-        _principal_editor: set[str] = set()
+        # Fotos seleccionadas (con su orden) desde fotos_seleccionadas.json.
+        # Es un dict con clave "fotos" (lista de {path, nombre, orden, rol}).
+        _orden_sel: dict[str, int] = {}
         try:
             _sel_path = noticia_dir / "fotos_seleccionadas.json"
             if _sel_path.exists():
                 import json as _json
-                for entry in _json.loads(_sel_path.read_text(encoding="utf-8")):
-                    if (entry.get("rol") or "") == "principal":
-                        _principal_editor.add(Path(entry["path"]).name.lower())
+                _sel_data = _json.loads(_sel_path.read_text(encoding="utf-8"))
+                _sel_fotos = (_sel_data.get("fotos", [])
+                              if isinstance(_sel_data, dict) else (_sel_data or []))
+                for entry in _sel_fotos:
+                    nm = Path(entry["path"]).name.lower()
+                    _orden_sel[nm] = entry.get("orden", 0)
         except Exception:
             pass
 
         def ordenar(p):
             import re as _re
             name = p.name.lower()
-            if name in _principal_editor:                                return (0, 0, name)
-            if _re.match(r"^principal", name):                           return (1, 0, name)
-            if _re.search(rf"para[\s_-]*la[\s_-]*0*{n}\b", name):       return (2, 0, name)
-            m = _re.match(rf"^extra(\d*)[_\s-]*{n:02d}\.", name)
-            if m: return (3, int(m.group(1) or 0), name)
-            return (4, 0, name)
+            # (0) seleccionadas por su orden (principal=0, segunda=1…)
+            if name in _orden_sel:                                       return (0, _orden_sel[name], name)
+            # (1) renombradas (convención "… para la NN")
+            if _re.search(rf"para[\s_-]*la[\s_-]*0*{n}\b", name):       return (1, 0, name)
+            # (2) las que empiezan con "principal_"
+            if name.startswith("principal_") or _re.match(r"^principal", name): return (2, 0, name)
+            # (3) resto, alfabético
+            return (3, 0, name)
 
         # En Maquetación incluimos avisos raíz + imágenes de noticia
         if self.controller.perfil == "Maquetación y avisos":
@@ -6306,6 +6370,7 @@ class MainWindow(QMainWindow):
             dlg.secciones_guardadas.connect(self._chrome_watcher.reload_secciones)
         dlg.exec_()
 
+
     def _cargar_avisos_reales_despues_de_pintado(self):
         """
         Tras renderizar la grilla, carga los avisos reales en un HILO dedicado
@@ -6395,18 +6460,47 @@ class MainWindow(QMainWindow):
                 self._aviso_dlg = None
 
 
-    def _activate_qr_mode(self):
-        """Activa overlay y comienza a vigilar los procesos PDF."""
-        self.qr_overlay = start_overlay()
-        if self.qr_overlay:
-            self.qr_overlay.qr_detected.connect(self._on_qr_detected)
-            self.qr_overlay.overlay_closed.connect(self._on_overlay_closed)
-        self._pdf_processes = self._detect_pdf_processes()
-        self._pdf_watcher = QTimer(self)
-        self._pdf_watcher.timeout.connect(self._check_pdf_processes)
-        self._pdf_watcher.start(3000)
-        _log.info("[QR] Overlay activado por PDF.")
+    def _info_pagina_para_qr(self) -> dict:
+        """Filas de info para el overlay del lector de QR al abrir un PDF (#9)."""
+        fecha = ""
+        try:
+            fe = getattr(self.controller.rutas, "fecha_edicion", None)
+            if fe:
+                dias = ["LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO", "DOMINGO"]
+                meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO",
+                         "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"]
+                fecha = f"{dias[fe.weekday()]} {fe.day} DE {meses[fe.month - 1]} DE {fe.year}"
+        except Exception:
+            pass
+        n = getattr(self, "pagina_activa", None)
+        try:
+            pag = self.controller.gestor_paginas.obtener_pagina(n) if n else None
+        except Exception:
+            pag = None
+        seccion_pagina, aviso = "", "—"
+        if pag is not None:
+            sec = (getattr(pag, "seccion", "") or "").strip() or "—"
+            seccion_pagina = f"{sec} — P{n:02d}"
+            tipo = ""
+            if getattr(pag, "aviso_full", False):       tipo = "Completa"
+            elif getattr(pag, "aviso_half", False):     tipo = "Media"
+            elif getattr(pag, "aviso_footer", False):   tipo = "Pie"
+            elif getattr(pag, "aviso_robapagina", False): tipo = "Robapágina"
+            nombre = (getattr(pag, "aviso_nombre", "") or "").strip()
+            aviso = (f"{tipo} {nombre}".strip() or "—") if (tipo or nombre) else "—"
+        elif n:
+            seccion_pagina = f"— P{n:02d}"
+        return {"filas": [
+            ("Fecha", fecha),
+            ("Sección y página", seccion_pagina),
+            ("Aviso", aviso),
+        ]}
 
+    def _activate_qr_mode(self):
+        """Abre el overlay del lector de QR (sin detección automática; cierre manual
+        con clic derecho en el overlay)."""
+        self.qr_overlay = start_overlay(info=self._info_pagina_para_qr())
+        _log.info("[QR] Overlay activado por PDF.")
 
     def _maximizar_quark(self):
         """

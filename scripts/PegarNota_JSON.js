@@ -161,6 +161,8 @@ var UNIVERSAL = {
 
 var _hits = 0;          // pegados exitosos (cualquier path)
 var _faltantes = [];    // box buscados que no existían
+var _fotoBoxesOk = 0;   // cajas de FOTO principal que recibieron imagen (src seteado)
+var _fotoPathTried = ""; // path de la foto principal que se intentó pegar
 
 function pegarAvisosEnSeccion(seccionNorm) {
   if (!avisos || avisos.length === 0) return;
@@ -204,6 +206,10 @@ function normalizeWinPath(p) {
 
 function toFileUrl(p) {
   p = normalizeWinPath(p);
+
+  // Escapar lo que rompe el file:// en el motor de Quark: espacios y '#'.
+  // No tocamos acentos: la carpeta acentuada (EDICIÓN Nº…) ya carga bien.
+  p = p.replace(/ /g, "%20").replace(/#/g, "%23");
 
   // Drive-letter: Z:/... -> file:///Z:/...
   if (/^[A-Za-z]:\//.test(p)) {
@@ -513,17 +519,41 @@ function setImagenEnBox(boxName, filePath) {
     // 🔹 Foto principal
     // =========================================================
     function pegarFotoPrincipal() {
-      var path = "";
+      var foto = null;
       for (var i = 0; i < fotos.length; i++) {
-        if (fotos[i].rol === "principal") {
-          path = (fotos[i].path || "").trim();
-          break;
-        }
+        if (fotos[i].rol === "principal") { foto = fotos[i]; break; }
       }
+      if (!foto) return;
+      var path = (foto.path || "").trim();
       if (!path) return;
+      _fotoPathTried = path;
       // Pegar la principal en las 3 variantes (las que no existan se ignoran)
       for (var b = 0; b < FOTO_BOXES.length; b++) {
-        setImagenEnBox(FOTO_BOXES[b], path);
+        var r = setImagenEnBox(FOTO_BOXES[b], path);
+        if (r && r.ok) _fotoBoxesOk++;
+      }
+    }
+
+    // Sección "Escrache al Bache": pegado DEDICADO. 2 imágenes distintas + sus epígrafes.
+    // img1 (orden 0) → Box6357, img2 (orden 1) → Box6429; epi1 → Box6599, epi2 → Box6604.
+    function pegarEscracheAlBache() {
+      var sorted = fotos.slice().sort(function (a, b) {
+        return (a.orden || 0) - (b.orden || 0);
+      });
+      if (sorted.length === 0) {
+        alert("Escrache al Bache: no llegaron fotos en data.fotos.\n\n" +
+              "Seleccioná las 2 fotos (principal y secundaria) en el editor y\n" +
+              "pegá eligiendo 'Sí, pegar todo'.");
+        return;
+      }
+      var IMG_BOXES = ["Box6357", "Box6429"];
+      var EPI_BOXES = ["Box6599", "Box6604"];
+      for (var i = 0; i < sorted.length && i < IMG_BOXES.length; i++) {
+        var f = sorted[i] || {};
+        var path = (f.path || "").trim();
+        if (path) setImagenEnBox(IMG_BOXES[i], path);   // si falta el box → va a _faltantes
+        var epi = cleanHTML(f.epigrafe || "");
+        if (epi) setTextoEnBox(EPI_BOXES[i], epi);
       }
     }
 
@@ -653,7 +683,11 @@ function setImagenEnBox(boxName, filePath) {
     // =========================================================
     // 🔹 Dispatch: universal primero, router por sección como fallback
     // =========================================================
-    if (hayBoxesUniversalesTexto()) {
+    if (seccionNorm === "escrache al bache") {
+      // Maqueta especial: pegado DEDICADO (nunca universal). Imágenes + epígrafes
+      // en sus boxes propios (Box6357/6429/6599/6604).
+      pegarEscracheAlBache();
+    } else if (hayBoxesUniversalesTexto()) {
       pegarUniversal();
     } else {
       // Fallback legacy por sección (rutinas intactas)
@@ -667,6 +701,14 @@ function setImagenEnBox(boxName, filePath) {
     if (_hits === 0) {
       var _uniq = _faltantes.filter(function (v, i) { return _faltantes.indexOf(v) === i; });
       alert("PegarNota: no se encontró ningún box para pegar.\n\nBox buscados sin éxito:\n" + _uniq.join(", "));
+    }
+
+    // Diagnóstico: si hubo foto y se pegó texto pero la foto no entró en ninguna caja.
+    if (_hits > 0 && fotos && fotos.length > 0 && _fotoBoxesOk === 0 && _fotoPathTried) {
+      var _fb = FOTO_BOXES.filter(function (v, i) { return FOTO_BOXES.indexOf(v) === i; });
+      alert("PegarNota: el texto se pegó pero la foto principal no entró en ninguna caja.\n\n" +
+            "Foto: " + _fotoPathTried + "\n" +
+            "Cajas de foto probadas (no existen en esta maqueta): " + _fb.join(", "));
     }
 
 

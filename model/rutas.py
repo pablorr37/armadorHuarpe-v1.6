@@ -198,6 +198,12 @@ class RutasEstado:
 
         return dia_dir
 
+    def es_edicion_maniana(self) -> bool:
+        """True si la edición activa es la del día siguiente (la que se está armando).
+        Se usa para gatear la sincronización compartida (solo sincroniza la de mañana)."""
+        man = datetime.date.today() + datetime.timedelta(days=1)
+        return self.fecha_edicion == man
+
     # -------- Crear base de mañana (corregido) --------
     def crear_base_maniana(self):
         hoy = datetime.date.today()
