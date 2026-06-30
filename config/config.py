@@ -56,6 +56,12 @@ class Config:
             "volanta_limit":            "90",
             "titulo_lineas":            "2",
             "titulo_chars_linea":       "38",
+            # Noticia secundaria (breve): cuerpo según maqueta con pie / vacía y
+            # titulador de una sola línea contando sin espacios.
+            "cuerpo_secundaria_pie_limit":   "630",
+            "cuerpo_secundaria_vacia_limit": "1050",
+            "titulo_breve_lineas":           "1",
+            "titulo_breve_chars":            "44",
             "bajada_limit":             "220",
             "epigrafe_principal_limit": "120",
             "cuerpo_warning_margin":    "50",
@@ -156,6 +162,27 @@ class Config:
             cfg["GENERAL"] = {}
         cfg["GENERAL"]["qr_overlay_x"] = str(int(x))
         cfg["GENERAL"]["qr_overlay_y"] = str(int(y))
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    @property
+    def maqueta_overlay_size(self):
+        """(w, h) guardado del widget de maqueta del overlay de pegado, o None."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        try:
+            return (cfg.getint("GENERAL", "maqueta_overlay_w"),
+                    cfg.getint("GENERAL", "maqueta_overlay_h"))
+        except Exception:
+            return None
+
+    def save_maqueta_overlay_size(self, w: int, h: int) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "GENERAL" not in cfg:
+            cfg["GENERAL"] = {}
+        cfg["GENERAL"]["maqueta_overlay_w"] = str(int(w))
+        cfg["GENERAL"]["maqueta_overlay_h"] = str(int(h))
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 

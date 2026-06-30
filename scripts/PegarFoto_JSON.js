@@ -103,6 +103,9 @@
       var imgs = box.getElementsByTagName("qx-img");
       if (imgs && imgs.length) {
         try {
+          // Vaciar primero fuerza el cambio → re-import desde disco aunque el path
+          // sea el mismo (el fotocromista re-edita el archivo sin renombrarlo).
+          try { imgs[0].setAttribute("src", ""); } catch (e0) {}
           imgs[0].setAttribute("src", url);
           _hits++;
           return { ok:true, why:"", box:boxName, url:url };
@@ -111,6 +114,7 @@
         }
       }
       try {
+        try { box.setAttribute("src", ""); } catch (e1) {}
         box.setAttribute("src", url);
         _hits++;
         return { ok:true, why:"", box:boxName, url:url };

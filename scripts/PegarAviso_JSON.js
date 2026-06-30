@@ -29,6 +29,8 @@
     // =========================================================
     var seccion = "SIN SECCIÓN";
     var avisos = [];
+    var numeroPagina = 0;
+    var fechaTexto = "";
 
     var _appdataDir = "C:/Users/usuario/AppData/Roaming";
     var _appdataScripts = _appdataDir + "/ArmadorHuarpe/scripts/";
@@ -52,6 +54,8 @@
         var data = JSON.parse(contenido);
         seccion = (data.seccion || "").trim();
         avisos = data.avisos || [];
+        numeroPagina = parseInt(data.numero_pagina || 0);
+        fechaTexto = (data.fecha || "").trim();
       }
     } catch (e2) {
       alert("Error leyendo data_pagina.json: " + e2);
@@ -99,6 +103,9 @@
       var imgs = box.getElementsByTagName("qx-img");
       if (imgs && imgs.length) {
         try {
+          // Vaciar primero fuerza el cambio → re-import desde disco aunque el path
+          // sea el mismo (el fotocromista re-edita el archivo sin renombrarlo).
+          try { imgs[0].setAttribute("src", ""); } catch (e0) {}
           imgs[0].setAttribute("src", url);
           _hits++;
           return { ok:true, why:"", box:boxName, url:url };
@@ -107,12 +114,62 @@
         }
       }
       try {
+        try { box.setAttribute("src", ""); } catch (e1) {}
         box.setAttribute("src", url);
         _hits++;
         return { ok:true, why:"", box:boxName, url:url };
       } catch (e2) {
         return { ok:false, why:"error en box.src: " + e2, box:boxName };
       }
+    }
+
+    // --- Helpers de texto (fecha + folio del aviso completa) ---
+    function qxBoxByName(name) {
+      return layout.querySelector("qx-box[box-name='" + name + "'][box-content-type='text']");
+    }
+
+    function ensureStory(box) {
+      if (!box) return null;
+      var story = box.getElementsByTagName("qx-story")[0];
+      if (!story) {
+        story = document.createElement("qx-story");
+        box.appendChild(story);
+      }
+      return story;
+    }
+
+    function setTextoEnBox(boxName, texto) {
+      var box = qxBoxByName(boxName);
+      if (!box) { _faltantes.push(boxName); return; }
+      _hits++;
+      var story = ensureStory(box);
+      var p0 = story.getElementsByTagName("qx-p")[0];
+      if (!p0) return;
+      var clone = p0.cloneNode(true);
+      var span = clone.getElementsByTagName("qx-span")[0];
+      if (!span) { span = document.createElement("qx-span"); clone.appendChild(span); }
+      span.textContent = texto;
+      while (story.firstChild) story.removeChild(story.firstChild);
+      story.appendChild(clone);
+    }
+
+    function setFecha(boxName) {
+      var box = qxBoxByName(boxName);
+      if (!box) { _faltantes.push(boxName); return; }
+      _hits++;
+      var story = ensureStory(box);
+      var p = story.getElementsByTagName("qx-p")[0];
+      if (!p) return;
+      var span = p.getElementsByTagName("qx-span")[0];
+      if (!span) { span = document.createElement("qx-span"); p.appendChild(span); }
+      var texto = fechaTexto;
+      if (!texto) {
+        var meses = ["ENERO","FEBRERO","MARZO","ABRIL","MAYO","JUNIO","JULIO","AGOSTO","SEPTIEMBRE","OCTUBRE","NOVIEMBRE","DICIEMBRE"];
+        var dias = ["DOMINGO","LUNES","MARTES","MIÉRCOLES","JUEVES","VIERNES","SÁBADO"];
+        var hoy = new Date(); hoy.setDate(hoy.getDate() + 1);
+        texto = dias[hoy.getDay()] + " " + hoy.getDate() + " DE " + meses[hoy.getMonth()] + " DE " + hoy.getFullYear();
+      }
+      span.textContent = texto;
     }
 
     // =========================================================
@@ -193,6 +250,13 @@
           var res = setImagenEnBox(targets[j], path);
           if (res.ok) okCount++;
           else fails.push(res);
+        }
+
+        // El aviso COMPLETA lleva encabezado de folio + fecha (la página queda
+        // cubierta salvo esa franja superior).
+        if (tipo === "completa") {
+          setTextoEnBox("Box366", numeroPagina + " | " + seccion.toUpperCase());
+          setFecha("Box1183");
         }
       }
 

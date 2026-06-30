@@ -894,7 +894,7 @@ class EditorNotaWindow(QMainWindow):
         tipo_row = QHBoxLayout()
         tipo_row.addWidget(QLabel("Tipo textual:"))
         self._cb_textual_tipo = QComboBox()
-        self._cb_textual_tipo.addItems(["—", "simple", "x2", "x3", "con foto", "con foto XL"])
+        self._cb_textual_tipo.addItems(["—", "simple", "x2", "con foto", "con foto XL"])
         tipo_row.addWidget(self._cb_textual_tipo)
         tipo_row.addStretch(1)
         lay_tx.addLayout(tipo_row)
@@ -1118,7 +1118,10 @@ class EditorNotaWindow(QMainWindow):
         self._apply_all_story_limits()
 
     def _apply_all_story_limits(self):
-        """Aplica los límites del config a todos los paneles de noticia."""
+        """Aplica los límites del config a todos los paneles de noticia. El panel
+        principal (índice 0) usa los límites de la maqueta; los secundarios (breves)
+        usan los límites de noticia secundaria según la maqueta resuelta (con pie /
+        vacía) y un titulador de una sola línea contando sin espacios."""
         mq = self._mq
         limits = {
             "cuerpo_limit":             mq.get("cuerpo_limit", 0),
@@ -1128,8 +1131,25 @@ class EditorNotaWindow(QMainWindow):
             "titulo_chars_linea":       mq.get("titulo_chars_linea", 38),
             "epigrafe_principal_limit": mq.get("epigrafe_principal_limit", 120),
         }
+        # ¿La maqueta resuelta es "con pie"? (nombre normalizado empieza con "pie")
+        es_pie = False
+        try:
+            from services.maqueta_reader_service import _normalizar
+            es_pie = _normalizar(self._cb_maqueta.currentText()).startswith("pie")
+        except Exception:
+            pass
+        cuerpo_breve = (mq.get("cuerpo_secundaria_pie_limit", 630) if es_pie
+                        else mq.get("cuerpo_secundaria_vacia_limit", 1050))
+        limits_breve = dict(limits)
+        limits_breve.update({
+            "cuerpo_limit":       cuerpo_breve,
+            "titulo_lineas":      mq.get("titulo_breve_lineas", 1),
+            "titulo_chars_linea": mq.get("titulo_breve_chars", 44),
+            "titulo_sin_espacio": True,
+        })
         for panel in self._stories:
-            panel.apply_limits(limits)
+            es_secundaria = getattr(panel, "_story_index", 0) >= 1
+            panel.apply_limits(limits_breve if es_secundaria else limits)
 
     def _on_story_type_changed(self, story_index: int, story_type: str):
         maqueta = self._cb_maqueta.currentText()

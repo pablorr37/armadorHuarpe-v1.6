@@ -1728,25 +1728,27 @@ class ArmadorController:
         {seccion, fecha, textual: <tipo|None>, textual_cargo, dato, numero,
          foto_tipo, foto_cant, firma, aviso, qr}."""
         comp = {"seccion": "", "fecha": "", "textual": None, "textual_cargo": "",
-                "dato": False, "numero": False, "foto_tipo": "", "foto_cant": 0,
-                "foto_nombres": [], "firma": False, "aviso": "", "qr": False}
+                "textual_nombre": "", "dato": False, "numero": False, "foto_tipo": "",
+                "foto_cant": 0, "foto_nombres": [], "firma": False, "firma_nombre": "",
+                "aviso": "", "aviso_nombre": "", "aviso_tipo": "", "qr": False}
         try:
             entry = self.file_service.read_page_entry(numero)
             comp["seccion"] = (entry.get("seccion") or "").strip()
             # --- Aviso (nombre + tipo) ---
             aviso_nombre = (entry.get("aviso_nombre") or "").strip()
+            if entry.get("aviso_full"):
+                comp["aviso_tipo"] = "full"
+            elif entry.get("aviso_half"):
+                comp["aviso_tipo"] = "half"
+            elif entry.get("aviso_footer"):
+                comp["aviso_tipo"] = "footer"
+            elif entry.get("aviso_robapagina"):
+                comp["aviso_tipo"] = "robapagina"
+            comp["aviso_nombre"] = aviso_nombre
             if aviso_nombre:
-                if entry.get("aviso_full"):
-                    tipo_av = "Completa"
-                elif entry.get("aviso_half"):
-                    tipo_av = "Media"
-                elif entry.get("aviso_footer"):
-                    tipo_av = "Pie"
-                elif entry.get("aviso_robapagina"):
-                    tipo_av = "Robapágina"
-                else:
-                    tipo_av = ""
-                comp["aviso"] = f"{aviso_nombre} ({tipo_av})" if tipo_av else aviso_nombre
+                _label = {"full": "Completa", "half": "Media", "footer": "Pie",
+                          "robapagina": "Robapágina"}.get(comp["aviso_tipo"], "")
+                comp["aviso"] = f"{aviso_nombre} ({_label})" if _label else aviso_nombre
             # --- Fecha de edición ---
             try:
                 fe = getattr(self.rutas, "fecha_edicion", None)
@@ -1777,12 +1779,15 @@ class ArmadorController:
                 tx = nd.get("textual")
                 if isinstance(tx, dict):
                     comp["textual"] = tx.get("tipo") or None
-                    comp["textual_cargo"] = (tx.get("cargo1") or tx.get("nombre1") or "").strip()
+                    comp["textual_nombre"] = (tx.get("nombre1") or "").strip()
+                    comp["textual_cargo"] = (tx.get("cargo1") or "").strip()
                 dato = nd.get("dato")
                 comp["dato"] = bool(dato.strip()) if isinstance(dato, str) else bool(dato)
                 comp["numero"] = bool(nd.get("numero"))
                 comp["foto_tipo"] = (nd.get("foto_tipo") or "").strip()
                 comp["firma"] = bool(nd.get("firma_habilitada"))
+                if comp["firma"]:
+                    comp["firma_nombre"] = (nd.get("firma") or "").strip()
                 comp["qr"] = bool(nd.get("qr_path") or (nd.get("_debug_qr") or {}).get("qrLinks"))
                 break
         except Exception as e:

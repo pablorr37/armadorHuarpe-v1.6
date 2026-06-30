@@ -513,7 +513,7 @@ class _AjustesRadialMenu(QWidget):
         bw, bh = anchor_btn.width(), anchor_btn.height()
         page_icon = max(22, int(min(bw, bh) * 0.25))
         icon = max(16, int(page_icon * 0.9 * 1.1))     # base (10% más chico) + 10% extra
-        ring = int((max(bw, bh) // 2 + int(icon * 0.8) + 6) * 1.3225)  # radio del anillo (+15% sobre el +15%)
+        ring = int((max(bw, bh) // 2 + int(icon * 0.8) + 6) * 1.48)  # radio del anillo (agrandado para 11 íconos)
 
         btn_px = icon + 10
         label_h = 20
@@ -1131,6 +1131,7 @@ class MainWindow(QMainWindow):
                                           icon_px=33, reservar_valor=True)
         self.info_usuario = CircleIconButton(_ax("usuario.png"), "Información", "",
                                              icon_px=33, reservar_valor=True)
+        self.info_estado.clicked.connect(lambda: self._on_info_estado_clicked())
         self.info_link.clicked.connect(lambda: self._on_info_link_clicked())
         self.info_usuario.clicked.connect(lambda: self._on_info_usuario_clicked())
 
@@ -1148,6 +1149,7 @@ class MainWindow(QMainWindow):
         _info_row.addStretch()
 
         arm_layout.addWidget(self.info_scroll)
+        self._aplicar_escala_info()   # labels proporcionales al tamaño de pantalla
 
         # --- Navegación entre noticias (02a, 02b...) ---
         nav_noticia_layout = QHBoxLayout()
@@ -2797,8 +2799,9 @@ class MainWindow(QMainWindow):
             (px("foto_tapa.png"),   "Foto de tapa",    lambda a: _toggle_tapa("tapa_foto", self._accion_marcar_tapa_foto)),
             (px("titulo_tapa.png"), "Título de tapa",  lambda a: _toggle_tapa("tapa_titulo", self._accion_marcar_tapa_titulo)),
             (px("borrar.png"),      "Eliminar",        lambda a: _show(self._menu_eliminar, a), puede_eliminar),   # idx 7
-            (px("nueva.png"),       "Nueva noticia",   lambda a: _show(self._menu_nueva_noticia, a)),              # idx 8
-            (px("quark.png"),       "Pegar en Quark",  lambda a: self._accion_pegar_quark(numero), puede_pegar),   # idx 9
+            (px("editar.png"),      "Editar noticia",  lambda a: self._abrir_editor_nota(numero), tiene_txt),      # idx 8
+            (px("nueva.png"),       "Nueva noticia",   lambda a: _show(self._menu_nueva_noticia, a)),              # idx 9
+            (px("quark.png"),       "Pegar en Quark",  lambda a: self._accion_pegar_quark(numero), puede_pegar),   # idx 10
         ]
         # Una sola instancia a la vez: cerrar el menú anterior con su animación
         # (con WA_DeleteOnClose se autodestruye al terminar). Evita instancias
@@ -5530,10 +5533,11 @@ class MainWindow(QMainWindow):
             self.controller.marcar_pegadas(pagina, subfolder, texto)
             # Recargar estado en memoria
             self._fotos_estado = self.controller.cargar_estado_fotos_pagina(pagina, subfolder)
-            # Overlay de info de página (arrastrable, con checklist) al pegar.
+            # Overlay con la maqueta de composición (arrastrable, con checklist) al pegar.
             try:
+                _comp = self.controller.composicion_pagina(pagina, subfolder)
                 self.qr_overlay = start_overlay(
-                    info=self._info_composicion_pagina(), auto_info=True
+                    comp=_comp, pag_num=pagina, auto_info=True
                 )
             except Exception as e:
                 _log.warning("No se pudo abrir el overlay de info al pegar: %s", e)
@@ -5669,9 +5673,10 @@ class MainWindow(QMainWindow):
         """
         super().resizeEvent(event)
 
-        # 1) Reacomodar la grilla de botones de página
+        # 1) Reacomodar la grilla de botones de página + escalar labels de la fila de estado
         try:
             QTimer.singleShot(50, self._crear_botones_grilla)
+            QTimer.singleShot(50, self._aplicar_escala_info)
         except Exception:
             pass
 
@@ -6213,6 +6218,40 @@ class MainWindow(QMainWindow):
         self.info_usuario.set_valor(info_val or "—")
         self.info_usuario.set_enabled(bool(ult_by))
 
+    def _aplicar_escala_info(self):
+        """Escala los labels de la fila de estado (Estado/Link/Información) proporcional
+        al tamaño de pantalla, igual que la grilla de páginas (base 1366×768)."""
+        try:
+            screen = QApplication.primaryScreen().availableGeometry()
+            scale = min(screen.width() / 1366, screen.height() / 768)
+        except Exception:
+            scale = 1.0
+        for btn in (getattr(self, "info_estado", None),
+                    getattr(self, "info_link", None),
+                    getattr(self, "info_usuario", None)):
+            if btn is not None:
+                btn.escalar_label(scale)
+
+    def _on_info_estado_clicked(self):
+        """Abre la carpeta donde está el archivo del estado actual de la página activa."""
+        if not getattr(self, "base_activa", False) or self.pagina_activa is None:
+            return
+        try:
+            archivo = self.controller.archivo_asociado_a_estado(self.pagina_activa)
+        except Exception as e:
+            QMessageBox.warning(self, "Abrir carpeta", f"No se pudo resolver el archivo:\n{e}")
+            return
+        if not archivo or not Path(archivo).exists():
+            QMessageBox.information(
+                self, "Estado de la página",
+                "No hay un archivo asociado al estado actual de esta página.")
+            return
+        carpeta = Path(archivo).parent
+        try:
+            os.startfile(str(carpeta))
+        except Exception as e:
+            QMessageBox.warning(self, "Abrir carpeta", f"No se pudo abrir la carpeta:\n{e}")
+
     def _on_info_link_clicked(self):
         links = getattr(self, "_info_links", []) or []
         if not links:
@@ -6435,49 +6474,11 @@ class MainWindow(QMainWindow):
             ("Aviso", aviso),
         ]}
 
-    def _info_composicion_pagina(self):
-        """Info ampliada del overlay al pegar: Sección, Fecha, Textuales/Dato/Número,
-        Foto/s, Aviso, QR. Las cápsulas se apilan hacia arriba (índice 0 = abajo), así
-        que la lista se invierte para que 'Sección' quede arriba en orden de lectura."""
-        n = getattr(self, "pagina_activa", None)
-        if not n:
-            return {"filas": []}
-        try:
-            comp = self.controller.composicion_pagina(n, self._subfolder_activo())
-        except Exception:
-            comp = {}
-        filas = [
-            ("Sección", comp.get("seccion") or "—"),
-            ("Fecha", comp.get("fecha") or "—"),
-        ]
-        if comp.get("textual"):
-            cargo = (comp.get("textual_cargo") or "").strip()
-            filas.append(("Textuales", f"{comp['textual']}{(' — ' + cargo) if cargo else ''}"))
-        if comp.get("dato"):
-            filas.append(("Dato", "Sí"))
-        if comp.get("numero"):
-            filas.append(("Número", "Sí"))
-        if comp.get("foto_cant") or comp.get("foto_tipo"):
-            n = comp.get("foto_cant", 0)
-            nombres = comp.get("foto_nombres") or []
-            tipo = (comp.get("foto_tipo") or "").strip()
-            partes = [f"{n} {'imagen' if n == 1 else 'imágenes'}"]
-            if nombres:
-                etq = "nombre" if len(nombres) == 1 else "nombres"
-                partes.append(f"{etq} {', '.join(nombres)}")
-            if tipo:
-                partes.append(f"a {tipo}")
-            filas.append(("Foto", ", ".join(partes)))
-        if comp.get("aviso"):
-            filas.append(("Aviso", comp["aviso"]))
-        if comp.get("qr"):
-            filas.append(("Tiene QR", ""))
-        return {"filas": list(reversed(filas))}
-
     def _activate_qr_mode(self):
         """Abre el overlay del lector de QR (sin detección automática; cierre manual
         con clic derecho en el overlay)."""
-        self.qr_overlay = start_overlay(info=self._info_pagina_para_qr())
+        self.qr_overlay = start_overlay(info=self._info_pagina_para_qr(),
+                                        mostrar_checklist=False)
         _log.info("[QR] Overlay activado por PDF.")
 
     def _maximizar_quark(self):

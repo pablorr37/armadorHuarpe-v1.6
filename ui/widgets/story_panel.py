@@ -242,6 +242,7 @@ class StoryPanel(QWidget):
             titulo_hdr_lay.addWidget(self._type_lbl)
             titulo_hdr_lay.addWidget(self._type_cb)
 
+        self._titulo_sin_espacio = False   # breves: contar el título sin espacios
         self._titulo_lbl = QLabel(
             f"Título ({rows} línea{'s' if rows > 1 else ''} × {cols} chars)"
         )
@@ -418,12 +419,14 @@ class StoryPanel(QWidget):
     def _on_titulo_changed(self):
         cols = self.title_grid.cols
         lines = self.title_grid.get_lines()
+        # Breves: el límite del título se cuenta SIN espacios (caracteres totales).
+        _n = (lambda l: len(l.replace(" ", ""))) if self._titulo_sin_espacio else len
         parts = [
-            f"L{i+1}: {len(l)}/{cols}" + (" ⚠" if len(l) > cols else "")
+            f"L{i+1}: {_n(l)}/{cols}" + (" ⚠" if _n(l) > cols else "")
             for i, l in enumerate(lines)
             if i < self.title_grid.rows
         ]
-        self._titulo_over = any(len(l) > cols for l in lines[:self.title_grid.rows])
+        self._titulo_over = any(_n(l) > cols for l in lines[:self.title_grid.rows])
         self.cnt_titulo.setText("\n".join(parts))
         self._refresh_titulo_counter()
         self.textChanged.emit()
@@ -512,6 +515,7 @@ class StoryPanel(QWidget):
             self._cuerpo_box_limit = limits["cuerpo_limit"]
             self._update_cuerpo_counter()
 
+        self._titulo_sin_espacio = bool(limits.get("titulo_sin_espacio", False))
         titulo_lineas = limits.get("titulo_lineas", self.title_grid.rows)
         titulo_chars = limits.get("titulo_chars_linea", self.title_grid.cols)
         prev_cols, prev_rows = self.title_grid.cols, self.title_grid.rows

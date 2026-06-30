@@ -38,6 +38,10 @@ class CircleIconButton(QWidget):
         self._activo = False
         self._reservar_valor = bool(reservar_valor)
         self._btn_px = self._icon_px + 12
+        # Escalado del TEXTO (no del ícono): tamaño de fuente base y ancho de label base.
+        self._base_font_px = 10
+        self._font_px = 10
+        self._base_label_w = label_w
 
         v = QVBoxLayout(self)
         v.setContentsMargins(2, 2, 2, 2)
@@ -62,7 +66,6 @@ class CircleIconButton(QWidget):
         self._val = QLabel(valor or "", self)
         self._val.setAlignment(Qt.AlignCenter)
         self._val.setWordWrap(True)
-        self._val.setStyleSheet("color:#9fb0c3; font-size:10px; background:transparent;")
         self._val.setVisible(self._reservar_valor or bool(valor))
 
         v.addWidget(self._btn, 0, Qt.AlignHCenter)
@@ -93,10 +96,21 @@ class CircleIconButton(QWidget):
                 "QPushButton:hover{background:#e7885f;}" % r)
             self._btn.setCursor(Qt.PointingHandCursor)
         self._lbl.setStyleSheet(
-            "color:%s; font-size:10px; font-weight:bold; background:transparent;"
-            % ("#e2e8f0" if self._enabled else "#7b8694"))
+            "color:%s; font-size:%dpx; font-weight:bold; background:transparent;"
+            % (("#e2e8f0" if self._enabled else "#7b8694"), self._font_px))
+        self._val.setStyleSheet(
+            "color:#9fb0c3; font-size:%dpx; background:transparent;" % self._font_px)
 
     # ── API ───────────────────────────────────────────────────
+    def escalar_label(self, scale: float):
+        """Escala SOLO el texto (título + valor) y, si tenía, el ancho del label,
+        proporcional al tamaño de pantalla. El ícono/botón no cambian de tamaño."""
+        s = max(0.6, float(scale))
+        self._font_px = max(9, round(self._base_font_px * s))
+        if self._base_label_w:
+            self._lbl.setFixedWidth(int(self._base_label_w * s))
+        self._aplicar_estilos()
+
     def set_enabled(self, enabled: bool):
         enabled = bool(enabled)
         if enabled == self._enabled:
