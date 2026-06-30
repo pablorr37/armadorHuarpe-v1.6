@@ -270,6 +270,7 @@ DEFAULT_PAGE_FIELDS = {
     "tapa_titulo": "false",
     "listo_para_armar": "false",
     "editando": "false",
+    "editando_por": "",
     "mono_extra": "",
     "by": "",
     "ts": "",
@@ -1449,6 +1450,7 @@ class FileService:
             "tapa_titulo": cfg[sec].getboolean("tapa_titulo", fallback=False),
             "listo_para_armar": cfg[sec].getboolean("listo_para_armar", fallback=False),
             "editando": cfg[sec].getboolean("editando", fallback=False),
+            "editando_por": cfg[sec].get("editando_por", "").strip(),
             "mono_extra": cfg[sec].get("mono_extra", "").strip(),
             "by": cfg[sec].get("by", "").strip(),
             "ts": cfg[sec].get("ts", "").strip(),
@@ -2788,7 +2790,7 @@ class FileService:
         return exact or spread
 
 
-    def decidir_mover_y_devolver(self, numero: int, perfil: str = "Armado y corrección"):
+    def decidir_mover_y_devolver(self, numero: int):
         """
         Retorna:
         {
@@ -2833,21 +2835,23 @@ class FileService:
             for ext in (".PDF", ".pdf"):
                 cand = pdf / f"{p2}{ext}"
                 if cand.exists():
-                    mover.update(src=cand, dest=pdf_ok / cand.name, label="Mover a OK", enabled=True)
+                    mover.update(src=cand, dest=pdf_ok / cand.name, label="Mover a\nOK", enabled=True)
                     break
 
         if self._pdf_exists(pdf_ok, numero):
             for ext in (".PDF", ".pdf"):
                 cand_ok = pdf_ok / f"{p2}{ext}"
                 if cand_ok.exists():
-                    devolver.update(src=cand_ok, dest=pdf / cand_ok.name, label="Devolver a PDF", enabled=True)
+                    devolver.update(src=cand_ok, dest=pdf / cand_ok.name, label="Devolver a\nPDF", enabled=True)
                     break
 
         # Si hay PDF ya definido, devolvemos
         if mover["enabled"] or devolver["enabled"]:
             return {"mover": mover, "devolver": devolver}
 
-        # --- 2) QXP según perfil ---
+        # --- 2) QXP (sin perfiles): cadena materiales → base → final → mandar → a pdf ---
+        apdf_dir = mandar / "a pdf"
+        qxp_apdf     = self.buscar_qxp_por_numero(apdf_dir, numero) if apdf_dir.exists() else None
         qxp_mandar   = self.buscar_qxp_por_numero(mandar, numero)   if mandar.exists()   else None
         qxp_final    = self.buscar_qxp_por_numero(final, numero)    if final.exists()    else None
         qxp_base_pag = self.buscar_qxp_por_numero(base, numero)     if base.exists()     else None
@@ -2857,90 +2861,50 @@ class FileService:
             self.buscar_qxp_por_numero(personal, numero) if personal and personal.exists() else None
         )
 
-        # ===============================================================
-        # PERFIL: Maquetación y avisos
-        # ===============================================================
-        if perfil == "Maquetación y avisos":
-            if qxp_mandar:
-                devolver.update(
-                    src=qxp_mandar,
-                    dest=final / qxp_mandar.name,
-                    label="Devolver a Final",
-                    enabled=True,
-                )
-            elif qxp_final:
-                devolver.update(
-                    src=qxp_final,
-                    dest=base / qxp_final.name,
-                    label="Devolver a Base",
-                    enabled=True,
-                )
-            elif qxp_base_num:
-                mover.update(
-                    src=qxp_base_num,
-                    dest=final / qxp_base_num.name,
-                    label="Mover a Final",
-                    enabled=True,
-                )
-            elif qxp_base_pag:
-                mover.update(
-                    label="Renombrá a 'NN.qxp' para avanzar",
-                    enabled=False,
-                )
+        # Matices: no permitir saltos no contiguos por spread (según estado del INI).
+        if estado == "proceso":
+            qxp_final = qxp_mandar = qxp_apdf = None
+        elif estado == "base":
+            qxp_mandar = qxp_apdf = None
+        elif estado == "final":
+            qxp_apdf = None
 
-        else:
-            # ==========================================================
-            # PERFIL: Armado y corrección (respeta estado del INI)
-            # ==========================================================
-            # 🔹 Filtro de seguridad: no permitir saltos entre estados no contiguos
-            if estado == "proceso":
-                # No permitir que una página en proceso salte directo a final/mandar
-                qxp_final = None
-                qxp_mandar = None
-            elif estado == "base":
-                # No permitir saltar base→mandar sin pasar por final
-                qxp_mandar = None
+        mat_pnn_dir  = Path(self.rutas.get("material") or "") / f"P{numero:02d}"
+        dest_proceso = mat_pnn_dir if mat_pnn_dir.exists() else personal
 
-            # --- Resto de la lógica normal ---
-            if qxp_mandar:
-                devolver.update(
-                    src=qxp_mandar,
-                    dest=final / qxp_mandar.name,
-                    label="Devolver a Final",
-                    enabled=True,
-                )
-            elif qxp_final:
-                mover.update(
-                    src=qxp_final,
-                    dest=mandar / qxp_final.name,
-                    label="Mover a Mandar",
-                    enabled=True,
-                )
-            elif qxp_base_pag:
-                mat_pnn_dir = Path(self.rutas.get("material") or "") / f"P{numero:02d}"
-                dest_devolver = mat_pnn_dir if mat_pnn_dir.exists() else personal
-                devolver.update(
-                    src=qxp_base_pag,
-                    dest=dest_devolver / qxp_base_pag.name,
-                    label="Devolver a En proceso",
-                    enabled=True,
-                )
-            elif qxp_personal:
-                stem = Path(qxp_personal).stem
+        # Un solo flujo: Mover avanza un paso, Devolver retrocede uno.
+        if qxp_apdf:
+            # En 'a pdf': solo retroceder a Mandar (el PDF lo genera un proceso aparte).
+            devolver.update(src=qxp_apdf, dest=mandar / qxp_apdf.name,
+                            label="Devolver a\nMandar", enabled=True)
+        elif qxp_mandar:
+            mover.update(src=qxp_mandar, dest=apdf_dir / qxp_mandar.name,
+                         label="Mover a\nA PDF", enabled=True)
+            devolver.update(src=qxp_mandar, dest=final / qxp_mandar.name,
+                            label="Devolver a\nFinal", enabled=True)
+        elif qxp_final:
+            mover.update(src=qxp_final, dest=mandar / qxp_final.name,
+                         label="Mover a\nMandar", enabled=True)
+            devolver.update(src=qxp_final, dest=base / qxp_final.name,
+                            label="Devolver a\nBase", enabled=True)
+        elif qxp_base_num:
+            # En base con nombre numérico 'NN.qxp': avanza a Final, retrocede a En proceso.
+            mover.update(src=qxp_base_num, dest=final / qxp_base_num.name,
+                         label="Mover a\nFinal", enabled=True)
+            devolver.update(src=qxp_base_num, dest=dest_proceso / qxp_base_num.name,
+                            label="Devolver a\nEn proceso", enabled=True)
+        elif qxp_base_pag:
+            # En base con nombre 'Pag NN': avanzar requiere renombrar a 'NN.qxp'; sí puede retroceder.
+            devolver.update(src=qxp_base_pag, dest=dest_proceso / qxp_base_pag.name,
+                            label="Devolver a\nEn proceso", enabled=True)
+            mover.update(label="Renombrá a 'NN.qxp' para avanzar a Final", enabled=False)
+        elif qxp_personal:
+            stem = Path(qxp_personal).stem
+            # Aceptar 'Pag NN ...' o 'NN...' en materiales/personal para COPIAR a Base.
+            if self._stem_es_pag(stem, numero) or self._stem_es_numerico(stem, numero):
+                mover.update(src=qxp_personal, dest=base / Path(qxp_personal).name,
+                             label="Mover a\nBase", enabled=True)
 
-                # Aceptar tanto "Pag NN ..." como "NN..." en PERSONAL para copiar a Base
-                if self._stem_es_pag(stem, numero) or self._stem_es_numerico(stem, numero):
-                    mover.update(
-                        src=qxp_personal,
-                        dest=base / Path(qxp_personal).name,
-                        label="Mover a Base",
-                        enabled=True,
-                    )
-                #else:
-                #    mover.update(
-                #        label="Nombrá como 'Pag NN - Sección.qxp' para copiar a Base",
-                #        enabled=False,
-                #    )
         return {"mover": mover, "devolver": devolver}
 
 

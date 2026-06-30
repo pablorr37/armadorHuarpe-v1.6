@@ -76,6 +76,10 @@ class QROverlay(QWidget):
         self._info = info or {}
         self._info_visible = bool(auto_info)  # si True, cápsulas visibles de entrada
         self._info_labels = []
+        self._checklist_labels = []
+        self._checklist_visible = True        # visible por defecto; ocultable aparte
+        self._geo = None
+        self._drag = None
 
         # Ventana transparente y siempre encima
         self.setWindowFlags(
@@ -98,10 +102,12 @@ class QROverlay(QWidget):
         self._tick_timer.timeout.connect(self._tick)
         self._tick_timer.start()
 
-        # Crear botón flotante “QR” + botón "información" (arriba del QR) y cápsulas
+        # Crear botón flotante “QR” + botón "información" (arriba del QR) + cápsulas + checklist
+        self._geo = geo
         self._create_qr_button(geo)
         self._create_info_button(geo)
         self._create_info_capsules(geo)
+        self._create_checklist_capsules(geo)
 
         self.show()
         _log.info("[QR] Overlay activo. Usa el botón QR para encender o apagar la mira.")
@@ -125,14 +131,21 @@ class QROverlay(QWidget):
                 background-color: #27ae60;
             }
         """)
-        # Posición: 20 px arriba y a la izquierda del borde inferior derecho
-        bx = geo.width() - 80
-        by = geo.height() - 200
+        # Posición inicial: guardada en config, o por defecto abajo-derecha.
+        bx, by = geo.width() - 80, geo.height() - 200
+        try:
+            from config.config import config_global
+            saved = config_global.qr_overlay_pos
+            if saved:
+                bx, by = saved
+        except Exception:
+            pass
+        bx = max(8, min(int(bx), geo.width() - 68))
+        by = max(88, min(int(by), geo.height() - 68))
         self._qr_bx, self._qr_by = bx, by
         self.qr_button.move(bx, by)
-
-        # Eventos: clic izquierdo para alternar, derecho para cerrar
-        self.qr_button.mousePressEvent = self._on_qr_button_click
+        # Arrastrable por el ícono; clic izq (sin arrastre) = alternar mira; der = cerrar.
+        self._instalar_drag(self.qr_button, self._toggle_mira)
 
     # ----------------------------------------------------------
     # Botón "información" + cápsulas (#9)
@@ -150,46 +163,137 @@ class QROverlay(QWidget):
             "QPushButton:hover{background-color:#d9534f;}"
         )
         self.info_button.move(self._qr_bx, self._qr_by - 80)
-        self.info_button.mousePressEvent = self._on_info_button_click
+        # Arrastrable; clic izq = info; clic medio = checklist; der = cerrar.
+        self._instalar_drag(self.info_button, self._toggle_info, on_middle=self._toggle_checklist)
 
     def _create_info_capsules(self, geo):
-        """Cápsulas estilizadas (naranja→rojo) con las filas de info (título: valor).
-        Las filas vienen en info['filas'] = [(titulo, valor), …] (contexto PDF o pegado).
-        Centradas sobre el botón de info y apiladas hacia arriba; más chicas."""
-        filas = self._info.get("filas") or []
-        cap_w, cap_h, gap = 230, 26, 6
-        cx = self._qr_bx + 30                  # centro horizontal del botón de info (60px)
-        # Clampear dentro del viewport: el botón está pegado al borde derecho, así que
-        # centrar la cápsula la sacaba de pantalla por la derecha.
-        x = max(8, min(cx - cap_w // 2, geo.width() - cap_w - 8))
-        info_top = self._qr_by - 80
-        for i, (titulo, valor) in enumerate(filas):
-            lbl = QLabel(f"  {titulo}: {valor if (valor not in (None, '')) else '—'}", self)
-            lbl.setFixedSize(cap_w, cap_h)
+        """Cápsulas de info (título: valor) desde info['filas']."""
+        self._cap_w, self._cap_h, self._gap = 230, 29, 6   # 10% más altas (26→29)
+        for (titulo, valor) in (self._info.get("filas") or []):
+            if titulo and (valor not in (None, "")):
+                txt = f"  {titulo}: {valor}"
+            elif titulo:
+                txt = f"  {titulo}"
+            else:
+                txt = f"  {valor}"
+            lbl = QLabel(txt, self)
             lbl.setFont(QFont("Arial", 9, QFont.Bold))
+            lbl.setWordWrap(True)
+            lbl.setFixedWidth(self._cap_w)
             lbl.setStyleSheet(
-                "QLabel{color:white;border-radius:13px;padding:0 8px;"
+                "QLabel{color:white;border-radius:14px;padding:0 8px;"
                 "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
                 "stop:0 #e7885f, stop:1 #d9534f);}"
             )
-            # i=0 inmediatamente arriba del botón; crecen hacia arriba (clampeadas).
-            y = max(8, info_top - (i + 1) * (cap_h + gap))
-            lbl.move(x, y)
-            lbl.setVisible(self._info_visible)   # respeta auto_info
+            lbl.setFixedHeight(max(self._cap_h, lbl.heightForWidth(self._cap_w)))
+            lbl.setVisible(self._info_visible)
             self._info_labels.append(lbl)
+        self._posicionar_capsulas()
 
-    def _on_info_button_click(self, event):
-        if event.button() == Qt.LeftButton:
-            self._toggle_info()
-        elif event.button() == Qt.RightButton:
-            # Mismo gesto que el QR: clic derecho cierra el overlay.
-            self.close()
-        event.accept()
+    def _create_checklist_capsules(self, geo):
+        """Checklist (recordatorios) por encima de las cápsulas de info; ocultable aparte
+        (clic medio en el botón de info, o clic sobre una cápsula del checklist)."""
+        items = [
+            "Poner en negrita todos los DIARIO HUARPE",
+            "Buscar intertítulos (comienzan con ## )",
+            "Borrar firma y correo si la nota no va firmada",
+        ]
+        for txt in items:
+            lbl = QLabel(f"  ☐  {txt}", self)
+            lbl.setFont(QFont("Arial", 9, QFont.Bold))
+            lbl.setWordWrap(True)
+            lbl.setFixedWidth(self._cap_w)
+            lbl.setStyleSheet(
+                "QLabel{color:#0f172a;border-radius:14px;padding:5px 8px;"
+                "background:#cfe8d8;border:1px solid #2ecc71;}"
+            )
+            # +10px (5 arriba + 5 abajo) por el padding vertical del checklist.
+            lbl.setFixedHeight(max(self._cap_h, lbl.heightForWidth(self._cap_w - 16) + 10))
+            lbl.setVisible(self._checklist_visible)
+            lbl.mousePressEvent = lambda ev: self._toggle_checklist()
+            self._checklist_labels.append(lbl)
+        self._posicionar_capsulas()
+
+    def _posicionar_capsulas(self):
+        """Posiciona info + checklist relativo a (_qr_bx, _qr_by)."""
+        if not self._geo:
+            return
+        cap_w, gap = self._cap_w, self._gap
+        cx = self._qr_bx + 30
+        x = max(8, min(cx - cap_w // 2, self._geo.width() - cap_w - 8))
+        # Apilar hacia arriba usando el alto real de cada cápsula (wordWrap → variable).
+        y = self._qr_by - 80
+        for lbl in self._info_labels:
+            y -= (lbl.height() + gap)
+            lbl.move(x, max(8, y))
+        y -= gap
+        for lbl in self._checklist_labels:
+            y -= (lbl.height() + gap)
+            lbl.move(x, max(8, y))
+
+    def _instalar_drag(self, button, on_click, on_middle=None):
+        """Arrastra la columna desde 'button'. Clic izq sin arrastre = on_click;
+        clic medio = on_middle; clic der = cerrar el overlay."""
+        def press(ev):
+            if ev.button() == Qt.LeftButton:
+                self._drag = {"moved": False, "g0": ev.globalPos(),
+                              "bx0": self._qr_bx, "by0": self._qr_by}
+            elif ev.button() == Qt.MiddleButton and on_middle:
+                on_middle()
+            elif ev.button() == Qt.RightButton:
+                self.close()
+            ev.accept()
+        def move(ev):
+            d = self._drag
+            if d and (ev.buttons() & Qt.LeftButton):
+                delta = ev.globalPos() - d["g0"]
+                if delta.manhattanLength() > 4:
+                    d["moved"] = True
+                self._reposicionar_columna(d["bx0"] + delta.x(), d["by0"] + delta.y())
+            ev.accept()
+        def release(ev):
+            d = self._drag
+            if ev.button() == Qt.LeftButton and d:
+                self._drag = None
+                if d["moved"]:
+                    self._guardar_posicion()
+                else:
+                    on_click()
+            ev.accept()
+        button.mousePressEvent = press
+        button.mouseMoveEvent = move
+        button.mouseReleaseEvent = release
+
+    def _reposicionar_columna(self, bx, by):
+        if self._geo:
+            bx = max(8, min(int(bx), self._geo.width() - 68))
+            by = max(88, min(int(by), self._geo.height() - 68))
+        self._qr_bx, self._qr_by = int(bx), int(by)
+        self.qr_button.move(self._qr_bx, self._qr_by)
+        self.info_button.move(self._qr_bx, self._qr_by - 80)
+        self._posicionar_capsulas()
+
+    def _guardar_posicion(self):
+        try:
+            from config.config import config_global
+            config_global.save_qr_overlay_pos(self._qr_bx, self._qr_by)
+        except Exception:
+            pass
 
     def _toggle_info(self):
         self._info_visible = not self._info_visible
         for lbl in self._info_labels:
             lbl.setVisible(self._info_visible)
+        # El toggle de info arrastra al checklist: si oculta info, oculta el checklist;
+        # si muestra info, lo vuelve a mostrar. (El clic medio lo alterna por separado.)
+        self._checklist_visible = self._info_visible
+        for lbl in self._checklist_labels:
+            lbl.setVisible(self._checklist_visible)
+
+    def _toggle_checklist(self):
+        self._checklist_visible = not self._checklist_visible
+        for lbl in self._checklist_labels:
+            lbl.setVisible(self._checklist_visible)
 
     def _on_qr_button_click(self, event):
         if event.button() == Qt.LeftButton:

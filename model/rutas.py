@@ -104,14 +104,15 @@ class RutasEstado:
             return
 
     # -------- Selección y guardado de raíces --------
-    def ensure_roots(self, prompt_fn, perfil: str | None = None):
+    def ensure_roots(self, prompt_fn):
         cfg = self._read_cfg()
         rutas = cfg.setdefault("RUTAS", {})
 
-        def ensure(key: str, title: str, pedir: bool = True):
+        def ensure(key: str, title: str, pedir: bool = True, opcional: bool = False):
             """
             - Siempre carga desde INI si existe.
             - Solo llama a prompt_fn si pedir=True y no está en INI.
+            - opcional=True: si se cancela el prompt, queda None (no bloquea el arranque).
             """
             val = rutas.get(key)
             if val:
@@ -119,27 +120,22 @@ class RutasEstado:
             elif pedir:
                 p = prompt_fn(key, title)
                 if not p:
+                    if opcional:
+                        setattr(self, key.replace("carpeta_", "") + "_root", None)
+                        return
                     raise RuntimeError(f"No se seleccionó {title}")
                 rutas[key] = str(p)
                 setattr(self, key.replace("carpeta_", "") + "_root", Path(p))
             else:
                 setattr(self, key.replace("carpeta_", "") + "_root", None)
 
-        # Estas siempre se piden/cargan
+        # Sin perfiles: todos necesitan todas las carpetas. Base/PDF/Pool son requeridas;
+        # avisos y personal se piden pero son tolerantes (si se cancela, quedan None).
         ensure("carpeta_base", "Seleccionar raíz Z:/PAPEL (BASE)")
         ensure("carpeta_pdf", "Seleccionar raíz Z:/PAPEL/IMPRENTA TEMPORAL (PDF)")
-        
-
-
-        # Avisos (perfil Maquetación)
-        pedir_avisos = (perfil == "Maquetación y avisos")
-        ensure("carpeta_avisos", "Seleccionar raíz de la carpeta de avisos (Comercial)", pedir=pedir_avisos)
-        ensure("carpeta_avisos2", "Seleccionar raíz de la segunda carpeta de avisos (Diseño)", pedir=pedir_avisos)
-
-        # Personal solo si perfil = Armado y corrección
-        ensure("carpeta_personal", "Seleccionar raíz de la carpeta En proceso",
-               pedir=(perfil == "Armado y corrección"))
-
+        ensure("carpeta_avisos", "Seleccionar raíz de la carpeta de avisos (Comercial)", opcional=True)
+        ensure("carpeta_avisos2", "Seleccionar raíz de la segunda carpeta de avisos (Diseño)", opcional=True)
+        ensure("carpeta_personal", "Seleccionar raíz de la carpeta En proceso", opcional=True)
         ensure("carpeta_pool", "Seleccionar carpeta Pool de noticias", pedir=True)
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:

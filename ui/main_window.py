@@ -820,19 +820,18 @@ class AvisoCacheWorker(QObject):
 
 
 # === Colores por estado de página ===
+# Sistema unificado (sin perfiles): color por UBICACIÓN del archivo.
 COLOR_ESTADOS = {
-    "impreso":   "#6beb5f",
-    "revisado":  "#2a8818",
-    "apdf":      "#b700ff", 
-    "corregido": "#fceb06", #PARA PERFIL Maquetación Y AVISOS
-    "fotocromia":"#db3431",
-    "armado":    "#db3431", #PARA PERFIL Maquetación Y AVISOS
-    "azul":       "#0080ff", #PARA PERFIL Maquetación Y AVISOS
-    "asignado":  "#80d4ff",
-    "asignado_remoto":"#ffffff" ,
-    "vacío":     "#2d2f30",
-    "txt": "#a8a8a8"
-    
+    "txt":             "#a8a8a8",   # gris        — tiene txt
+    "asignado":        "#80d4ff",   # celeste     — asignado (qxp en materiales/Pnn), propio
+    "asignado_remoto": "#ffffff",   # blanco      — asignado por otro usuario
+    "base":            "#0080ff",   # azul        — qxp en base
+    "final":           "#db3431",   # rojo        — qxp en final
+    "mandar":          "#fceb06",   # amarillo    — qxp en mandar
+    "apdf":            "#b700ff",   # morado      — qxp en 'a pdf'
+    "imprenta":        "#2a8818",   # verde oscuro— PDF en imprenta temporal
+    "ok":              "#6beb5f",   # verde claro — PDF en OK
+    "vacío":           "#2d2f30",   # gris oscuro — nada
 }
 
        # Estilo visual tipo toggle
@@ -1102,37 +1101,7 @@ class MainWindow(QMainWindow):
         self.panel_izquierdo.setLayout(panel_izq_layout)
         self.panel_izquierdo.setFixedWidth(400)
 
-        # --- NUEVO SELECTOR DE PERFIL (switch con íconos) ---
-        panel_izq_layout.addWidget(QLabel("Seleccione perfil de usuario:"))
-
-        perfil_layout = QHBoxLayout()
-        perfil_layout.setSpacing(10)
-
-        # Botón: Armado y corrección
-        self.btn_armado = QPushButton("Armado")
-        self.btn_armado.setIcon(QIcon(resource_path("ui/assets/texto.png")))
-        self.btn_armado.setIconSize(QSize(30, 30))
-        self.btn_armado.setCheckable(True)
-
-        # Botón: Maquetación y avisos
-        self.btn_maquetacion = QPushButton("Maquetación")
-        self.btn_maquetacion.setIcon(QIcon(resource_path("ui/assets/cmyk.png")))
-        self.btn_maquetacion.setIconSize(QSize(30, 30))
-        self.btn_maquetacion.setCheckable(True)
-
-        self.btn_armado.setStyleSheet(style_btn)
-        self.btn_maquetacion.setStyleSheet(style_btn)
-
-        perfil_layout.addWidget(self.btn_armado)
-        perfil_layout.addWidget(self.btn_maquetacion)
-        panel_izq_layout.addLayout(perfil_layout)
-
-        # Estado inicial
-        self.btn_armado.setChecked(True)
-
-        # Conexiones de perfil
-        self.btn_armado.clicked.connect(lambda: self._set_perfil("Armado y corrección"))
-        self.btn_maquetacion.clicked.connect(lambda: self._set_perfil("Maquetación y avisos"))
+        # (Sistema de perfiles removido: ya no hay selector Armado/Maquetación; experiencia única.)
 
         # Label página activa (siempre arriba, compartida)
         self.label_pagina_activa = QLabel("Página activa: -")
@@ -1525,12 +1494,12 @@ class MainWindow(QMainWindow):
         # Mover / Devolver — íconos circulares (estética radial), ~10% más grandes.
         # Orden en la barra: Devolver (izq) y luego Mover (der).
         self.boton_mover = CircleIconButton(
-            QPixmap(resource_path("ui/assets/adelante.png")), "Mover", icon_px=32)
+            QPixmap(resource_path("ui/assets/adelante.png")), "Mover", icon_px=32, label_w=100)
         self.boton_mover.clicked.connect(self.on_mover)
         self.boton_mover.set_enabled(False)
 
         self.boton_devolver = CircleIconButton(
-            QPixmap(resource_path("ui/assets/atras.png")), "Devolver", icon_px=32)
+            QPixmap(resource_path("ui/assets/atras.png")), "Devolver", icon_px=32, label_w=100)
         self.boton_devolver.clicked.connect(self.on_devolver)
         self.boton_devolver.set_enabled(False)
 
@@ -1555,7 +1524,7 @@ class MainWindow(QMainWindow):
 
         
 
-        self.on_cambiar_perfil("Armado y corrección")
+        self._aplicar_ui_unificada()
 
 
         # Avisos reales en falso al inicio
@@ -2098,15 +2067,36 @@ class MainWindow(QMainWindow):
 
     def _set_editando(self, numero: int, valor: bool):
         try:
-            self.controller.file_service.write_page_entry(numero, editando="true" if valor else "false")
+            usuario = (self.controller.usuario or "").strip()
+            self.controller.file_service.write_page_entry(
+                numero,
+                editando="true" if valor else "false",
+                editando_por=(usuario if valor else ""),
+            )
             pag = self.controller.gestor_paginas.obtener_pagina(numero)
             if pag:
                 pag.editando = valor
+                pag.editando_por = usuario if valor else ""
+                pag.editando_por_otro = False  # lo edito yo (o nadie)
             boton = self.boton_paginas.get(numero)
             if isinstance(boton, PageButton):
                 boton.set_editando_flag(valor)
         except Exception:
             pass
+
+    def _bloqueado_por_edicion(self, numero: int) -> bool:
+        """True (y avisa) si la página la está editando OTRO usuario: bloquea
+        asignar / mover / devolver / eliminar."""
+        pag = self.controller.gestor_paginas.obtener_pagina(numero)
+        if pag and getattr(pag, "editando_por_otro", False):
+            quien = getattr(pag, "editando_por", "") or "otro usuario"
+            QMessageBox.information(
+                self, "Página en edición",
+                f"La página {numero} la está editando {quien}.\n"
+                f"No se puede asignar, mover ni eliminar hasta que termine."
+            )
+            return True
+        return False
 
     def _accion_descartar_editando(self, numero: int):
         self._set_editando(numero, False)
@@ -2283,28 +2273,21 @@ class MainWindow(QMainWindow):
         asignacion_local = bool(getattr(pag, "asignada_por_ini", False))
         puede_pegar = bool(asignacion_local and frags)
 
-        # --- Pegar en Quark  /  Abrir imagen (según perfil) ---
-        if self.controller.perfil == "Maquetación y avisos":
-            pegar_act = QAction("Abrir imagen", self)
-            pegar_act.setEnabled(bool(self.controller.file_service.find_material_image_for_page(numero)))
-            pegar_act.triggered.connect(lambda: self._accion_abrir_imagen(numero))
-        else:
-            # Armado: como antes
-            asignacion_local = bool(getattr(pag, "asignada_por_ini", False))
-            puede_pegar = bool(asignacion_local and frags)
-            pegar_act = QAction("Pegar en Quark", self)
-            pegar_act.setEnabled(puede_pegar)
-            pegar_act.triggered.connect(lambda: self._accion_pegar_quark(numero))
+        # --- Pegar en Quark (sin perfiles; "Abrir imagen" tiene su propio botón) ---
+        asignacion_local = bool(getattr(pag, "asignada_por_ini", False))
+        puede_pegar = bool(asignacion_local and frags)
+        pegar_act = QAction("Pegar en Quark", self)
+        pegar_act.setEnabled(puede_pegar)
+        pegar_act.triggered.connect(lambda: self._accion_pegar_quark(numero))
         menu.addAction(pegar_act)
 
-        if self.controller.perfil == "Armado y corrección":
-            pagina_cm = self.controller.gestor_paginas.obtener_pagina(numero)
-            if pagina_cm and pagina_cm.asignado:
-                act_editor = menu.addAction("Abrir editor de nota")
-                act_editor.triggered.connect(lambda: self._abrir_editor_nota(numero))
+        pagina_cm = self.controller.gestor_paginas.obtener_pagina(numero)
+        if pagina_cm and pagina_cm.asignado:
+            act_editor = menu.addAction("Abrir editor de nota")
+            act_editor.triggered.connect(lambda: self._abrir_editor_nota(numero))
 
         menu.addSeparator()
-        if self.controller.perfil != "Maquetación y avisos":
+        if True:  # asignación/avisos: disponible siempre (sin perfiles)
             submenu = QMenu("Asignación / avisos", self)
 
             tiene_txt = bool(pag.asignado)
@@ -2485,7 +2468,7 @@ class MainWindow(QMainWindow):
         devolver_act.triggered.connect(lambda: self._accion_devolver(numero))
         menu.addAction(devolver_act)
 
-        if self.controller.perfil == "Maquetación y avisos":
+        if True:  # "Abrir Quark": disponible siempre (sin perfiles)
             abrir_qxp_act = QAction("Abrir Quark", self)
             can_qxp = bool(self.controller.file_service.find_qxp_final(numero)
                            or self.controller.file_service.find_qxp_base(numero))
@@ -2635,6 +2618,10 @@ class MainWindow(QMainWindow):
                 act = QAction(f"Noticia {suf.upper()} ({rol})", self)
                 act.triggered.connect(lambda _, i=idx: self._accion_borrar_noticia(numero, i))
                 sub.addAction(act)
+            sub.addSeparator()
+            act_todas = QAction("Eliminar todas", self)
+            act_todas.triggered.connect(lambda: self._accion_borrar_todas_noticias(numero))
+            sub.addAction(act_todas)
             m.addMenu(sub)
         else:
             act_n = QAction(ic("noticia.png"), "Eliminar noticia", self)
@@ -2664,6 +2651,8 @@ class MainWindow(QMainWindow):
 
     def _accion_asignar_directo(self, numero: int):
         """Asigna la página (rama 'asignar' de on_quitar) sin depender del texto del botón."""
+        if self._bloqueado_por_edicion(numero):
+            return
         try:
             fs = self.controller.file_service
             entry = fs.read_page_entry(numero)
@@ -3007,8 +2996,8 @@ class MainWindow(QMainWindow):
         self._update_aviso_nombre(pagina)
         estilos = self.boton_paginas[numero].styleSheet()
         self.boton_paginas[numero].setStyleSheet(f"{estilos} border: 6px solid #4043EB;")
-        # Mostrar widget de maqueta si corresponde
-        if self.controller.perfil == "Maquetación y avisos":
+        # Mostrar widget de maqueta (siempre, sin perfiles)
+        if True:
             self.maqueta_widget.set_pagina(pagina)
 
     #acciones del menú contextual
@@ -3017,6 +3006,8 @@ class MainWindow(QMainWindow):
         Borra la subnoticia indicada (idx → 0=a, 1=b, etc.).
         Limpia el INI y actualiza interfaz.
         """
+        if self._bloqueado_por_edicion(numero):
+            return
         fs = self.controller.file_service
         folder = fs.material / f"P{numero:02d}"
         subnotas = sorted(folder.glob("*/*.txt")) if folder.exists() else []
@@ -3051,8 +3042,37 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Borrar noticia", str(e))
 
+    def _accion_borrar_todas_noticias(self, numero: int):
+        """Borra TODAS las noticias de la página (limpia el INI y actualiza interfaz)."""
+        if self._bloqueado_por_edicion(numero):
+            return
+        fs = self.controller.file_service
+        resp = QMessageBox.question(
+            self, "Borrar todas las noticias",
+            f"¿Seguro que querés borrar TODAS las noticias de la página {numero}? "
+            f"(También quitará las imágenes).",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
+            return
+        try:
+            fs.limpiar_notas(numero, by="")
+            fs.write_page_entry(numero, assigned=False, listo_para_armar="false", by="")
+            pag2 = self.controller.gestor_paginas.obtener_pagina(numero)
+            if pag2:
+                pag2.asignado = False
+                pag2.asignada_por_ini = False
+                pag2.listo_para_armar = False
+            boton = self.boton_paginas.get(numero)
+            if isinstance(boton, PageButton):
+                boton.set_listo_flag(False)
+            self._despues_de_cambio_estado(numero)
+            self.actualizar_info_pagina(pag2)
+        except Exception as e:
+            QMessageBox.critical(self, "Borrar todas las noticias", str(e))
 
-    
+
+
     def _accion_marcar_tapa_foto(self, numero: int):
         usuario = (self.controller.usuario or "").strip()
         self.controller.marcar_tapa_foto(numero, by=usuario)
@@ -3514,7 +3534,7 @@ class MainWindow(QMainWindow):
             # 3. Refrescar la UI y maqueta
             self._despues_de_cambio_estado(numero)
 
-            if self.controller.perfil == "Maquetación y avisos":
+            if True:  # actualizar maqueta siempre (sin perfiles)
                 self.maqueta_widget.set_pagina(pag)
                 self.maqueta_widget.update()
 
@@ -3542,6 +3562,8 @@ class MainWindow(QMainWindow):
         
     
     def _accion_asignar_texto(self, numero: int):
+        if self._bloqueado_por_edicion(numero):
+            return
         link, ok = QInputDialog.getText(self, "Cargar link", "Pegá el link de la nota:")
         if not ok or not link.strip():
             return
@@ -3587,7 +3609,7 @@ class MainWindow(QMainWindow):
 
             # Aviso suave y repaint (si estás en Maquetación, la maqueta lo usará luego)
             self.statusBar().showMessage("Carpeta de avisos configurada.", 3000)
-            if self.controller.perfil == "Maquetación y avisos":
+            if True:  # actualizar maqueta siempre (sin perfiles)
                 self.maqueta_widget.update()
 
         except Exception as e:
@@ -3599,13 +3621,7 @@ class MainWindow(QMainWindow):
             def prompt_fn(clave, titulo):
                 return QFileDialog.getExistingDirectory(self, titulo)
 
-            # ✅ Obtener perfil activo desde los botones toggle
-            if self.btn_maquetacion.isChecked():
-                perfil = "Maquetación y avisos"
-            else:
-                perfil = "Armado y corrección"
-
-            self.controller.rutas.ensure_roots(prompt_fn, perfil=perfil)
+            self.controller.rutas.ensure_roots(prompt_fn)
 
             # --- Sincronizar pool_root con la UI ---
             if self.controller.rutas.pool_root:
@@ -3871,52 +3887,26 @@ class MainWindow(QMainWindow):
 
 
     def _estado_visible(self, pagina) -> str:
-        # --- PDF tiene prioridad máxima ---
+        # Sistema unificado (sin perfiles): estado por UBICACIÓN del archivo, en prioridad
+        # PDF (ok/imprenta) → QXP (apdf/mandar/final/base) → asignado (materiales) → txt.
         if pagina.impreso:
-            return "impreso"        # verde claro (PDF en OK)
+            return "ok"               # verde claro (PDF en OK)
         if pagina.revisado:
-            return "revisado"       # verde oscuro (PDF en PDF)
-
-        if self.controller.perfil == "Armado y corrección":
-            if pagina.fotocromia:
-                return "fotocromia"
-            if getattr(pagina, "asignada_por_otro", False):
-                return "asignado_remoto"
-            if getattr(pagina, "asignada_por_ini", False):
-                return "asignado"
-            if pagina.asignado:
-                return "txt"
-            if pagina.apdf:
-                return "apdf"        # lila  (QXP en A PDF)
-            return "vacío"
-            
-
-        elif self.controller.perfil == "Maquetación y avisos":
-            if pagina.corregido:
-                return "corregido"   # amarillo (QXP en Final/Mandar)
-            if pagina.armado:
-                return "armado"      # blanco (QXP en Base)
-            #if pagina.asignado or getattr(pagina, "asignada_por_ini", False) or getattr(pagina, "asignada_por_otro", False):
-            #    return "txt"         # gris claro (asignada) AHORA ES AZUL
-            if pagina.apdf:
-                return "apdf"       # lila  (QXP en A PDF)
-            if pagina.fotocromia:
-                return "azul"          # azul 
-            return "vacío"           # gris oscuro (nada)
-
-        # fallback genérico (otros perfiles que puedan aparecer)
-        if pagina.armado:
-            return "armado"
-        if pagina.corregido:
-            return "corregido"
-        if getattr(pagina, "asignada_por_otro", False):
-            return "asignado_remoto"
-        if getattr(pagina, "asignada_por_ini", False):
-            return "asignado"
-        if pagina.asignado:
-            return "txt"
+            return "imprenta"         # verde oscuro (PDF en imprenta temporal)
         if pagina.apdf:
-                return "apdf"        # lila  (QXP en A PDF)
+            return "apdf"             # morado (QXP en 'a pdf')
+        if pagina.corregido:
+            return "mandar"           # amarillo (QXP en mandar)
+        if pagina.fotocromia:
+            return "final"            # rojo (QXP en final)
+        if pagina.armado:
+            return "base"             # azul (QXP en base)
+        if getattr(pagina, "asignada_por_otro", False):
+            return "asignado_remoto"  # blanco (asignada por otro usuario)
+        if getattr(pagina, "asignada_por_ini", False):
+            return "asignado"         # celeste (asignada por mí, qxp en materiales)
+        if pagina.asignado:
+            return "txt"              # gris (tiene txt)
         return "vacío"
 
     def on_actualizar_paginas(self):
@@ -3955,8 +3945,8 @@ class MainWindow(QMainWindow):
                 # #9a: mostrar el label de maqueta con el nombre del aviso
                 self._update_aviso_nombre(pag)
                 self.label_aviso_nombre.setVisible(True)
-        elif modo != 2 and self.controller.perfil != "Maquetación y avisos":
-            # al cerrar el panel de aviso en Armado, ocultar el label
+        elif modo != 2:
+            # al cerrar el panel de aviso, ocultar el label
             self.label_aviso_nombre.setVisible(False)
         # expandir = mostrar algo distinto de las fotos (desliza desde la izquierda)
         self._animar_stack_info(modo, expandir=(modo != 0))
@@ -4022,57 +4012,23 @@ class MainWindow(QMainWindow):
         if hasattr(self, "tab_panel_aviso"):
             self.tab_panel_aviso.set_expandido(False)
 
-    def on_cambiar_perfil(self, perfil: str):
-        # NO forzar ocultar 'Armar mono' si está activo
+    def _aplicar_ui_unificada(self):
+        """UI unificada (sin perfiles). Reemplaza al viejo on_cambiar_perfil/_set_perfil:
+        botón 'Pegar en Quark', solapas/paneles visibles, navegación de noticias visible."""
         if not self.action_armar_mono.isChecked():
-            # Solo si NO está activo, volvemos al panel estándar
             self.stack_left.setCurrentWidget(self.panel_armado_maquetacion)
 
-        # info_scroll visible siempre. La maqueta vive ahora en el stack (página 2),
-        # gestionada por las solapas; no se la muestra/oculta directamente.
         self.info_scroll.setVisible(True)
-        # Ambas solapas visibles en los dos perfiles.
         self.tab_info_noticia.setVisible(True)
         self.tab_panel_aviso.setVisible(True)
-        # Armado arranca en fotos (modo 0); Maquetación muestra el aviso (modo 2).
-        if perfil == "Maquetación y avisos":
-            self._set_panel_modo(2)
-        else:
-            self._plegar_info_noticia()
-        self.label_aviso_nombre.setVisible(perfil == "Maquetación y avisos")
+        self._plegar_info_noticia()
+        self.label_aviso_nombre.setVisible(False)
 
+        self.boton_pegar.setText("Pegar en Quark")
+        self.btn_prev_noticia.setVisible(True)
+        self.btn_next_noticia.setVisible(True)
+        self.label_noticia_titulo.setVisible(bool(self._noticias))
 
-        self.controller.cambiar_perfil(perfil)
-        es_maquetacion = (perfil == "Maquetación y avisos")
-        for boton in self.boton_paginas.values():
-            boton.modo_maquetacion = es_maquetacion
-            boton.update()
-
-        if perfil == "Maquetación y avisos":
-            self.boton_pegar.setText("Abrir imagen")
-            # boton_abrir_quark ya no se muestra (removido de la toolbar, #3b).
-
-            # Maqueta/aviso se muestra vía el stack (solapa "Panel de aviso", modo 2)
-            self.label_aviso_nombre.setVisible(True)
-
-            # Ocultar navegación de noticias
-            #self.btn_prev_noticia.setVisible(False)
-            #self.btn_next_noticia.setVisible(False)
-            #self.label_noticia_titulo.setVisible(False)
-
-        else:
-
-            self.boton_pegar.setText(f"Pegar en Quark")
-
-            # Armado: el aviso se ve al desplegar "Panel de aviso" (stack página 2)
-            self.label_aviso_nombre.setVisible(False)
-
-            # Mostrar navegación de noticias
-            self.btn_prev_noticia.setVisible(True)
-            self.btn_next_noticia.setVisible(True)
-            self.label_noticia_titulo.setVisible(bool(self._noticias))
-
-        # 🔹 Forzar actualización de layout del panel izquierdo
         if hasattr(self, "panel_izquierdo"):
             self.panel_izquierdo.update()
             self.panel_izquierdo.adjustSize()
@@ -4088,20 +4044,6 @@ class MainWindow(QMainWindow):
             self.actualizar_info_pagina(pagina)
             self._load_images_for_page(self.pagina_activa)
             self.maqueta_widget.set_pagina(pagina)
-
-
-
-    def _set_perfil(self, perfil: str):
-        """Sincroniza botones y ejecuta cambio de perfil."""
-        if perfil == "Armado y corrección":
-            self.btn_armado.setChecked(True)
-            self.btn_maquetacion.setChecked(False)
-        else:
-            self.btn_armado.setChecked(False)
-            self.btn_maquetacion.setChecked(True)
-
-        # Ejecuta el cambio de perfil como antes
-        self.on_cambiar_perfil(perfil)
 
 
     ### Funciones y métodos de Armado de MONO ###
@@ -4889,8 +4831,8 @@ class MainWindow(QMainWindow):
         estilos = self.boton_paginas[numero].styleSheet()
         self.boton_paginas[numero].setStyleSheet(estilos + " border: 6px solid #4043EB;")
         self._update_label_asignacion(numero)
-        # Actualizar maqueta si corresponde (Maquetación, o si el "Panel de aviso" está abierto)
-        if self.controller.perfil == "Maquetación y avisos" or getattr(self, "_panel_modo", 0) == 2:
+        # Actualizar maqueta si el "Panel de aviso" está abierto.
+        if getattr(self, "_panel_modo", 0) == 2:
             self.maqueta_widget.set_pagina(pagina)
 
     def _update_aviso_nombre(self, pagina):
@@ -5373,8 +5315,8 @@ class MainWindow(QMainWindow):
 
             self.texto_noticia.setReadOnly(True)
 
-        # --- Ajuste de botones según perfil ---
-        if self.controller.perfil == "Maquetación y avisos":
+        # --- Ajuste de botones (sin perfiles; siempre comportamiento de Armado) ---
+        if False:  # rama Maquetación desactivada
             # "Abrir imagen"
             img = self.controller.file_service.find_material_image_for_page(pagina.numero)
             self.boton_pegar.setEnabled(bool(img))
@@ -5420,7 +5362,11 @@ class MainWindow(QMainWindow):
                 else:
                     self.boton_quitar.setText("Asignar")
                     self.boton_quitar.setEnabled(True)
-            self.boton_abrir_quark.setEnabled(False)
+            # Abrir Quark disponible si hay qxp en final/base (sin perfiles).
+            self.boton_abrir_quark.setEnabled(
+                bool(self.controller.file_service.find_qxp_final(pagina.numero)
+                     or self.controller.file_service.find_qxp_base(pagina.numero))
+            )
         # --- Habilitar el botón "+" solo si ya hay una nota asignada ---
 
         tiene_txt = self.controller.file_service.has_notas(pagina.numero)
@@ -5453,26 +5399,19 @@ class MainWindow(QMainWindow):
         # --- Realce si el QXP está en proceso pero no en Base/Final/Mandar ---
         # (relleno naranja persistente del CircleIconButton como aviso de "avanzar").
         try:
-            perfil = getattr(self.controller, "perfil", "Armado y corrección")  # default por seguridad
+            rutas = self.controller.file_service.rutas or {}
+            base = Path(rutas.get("quark_output_dir") or "")
+            personal = Path(rutas.get("personal_folder") or "")
+            final = base / "final"
+            mandar = final / "mandar"
 
-            if perfil == "Armado y corrección":
-                rutas = self.controller.file_service.rutas or {}
-                base = Path(rutas.get("quark_output_dir") or "")
-                personal = Path(rutas.get("personal_folder") or "")
-                final = base / "final"
-                mandar = final / "mandar"
-
-                en_proceso = personal.exists() and self.controller.file_service.buscar_qxp_por_numero(personal, pag.numero)
-                en_destino = (
-                    (base.exists()   and self.controller.file_service.buscar_qxp_por_numero(base, pag.numero)) or
-                    (final.exists()  and self.controller.file_service.buscar_qxp_por_numero(final, pag.numero)) or
-                    (mandar.exists() and self.controller.file_service.buscar_qxp_por_numero(mandar, pag.numero))
-                )
-
-                self.boton_mover.set_activo(bool(en_proceso and not en_destino))
-            else:
-                # En Maquetación y otros perfiles → nunca realzado
-                self.boton_mover.set_activo(False)
+            en_proceso = personal.exists() and self.controller.file_service.buscar_qxp_por_numero(personal, pag.numero)
+            en_destino = (
+                (base.exists()   and self.controller.file_service.buscar_qxp_por_numero(base, pag.numero)) or
+                (final.exists()  and self.controller.file_service.buscar_qxp_por_numero(final, pag.numero)) or
+                (mandar.exists() and self.controller.file_service.buscar_qxp_por_numero(mandar, pag.numero))
+            )
+            self.boton_mover.set_activo(bool(en_proceso and not en_destino))
         except Exception:
             self.boton_mover.set_activo(False)
 
@@ -5480,11 +5419,6 @@ class MainWindow(QMainWindow):
 
     def on_pegar(self):
         """Genera los fragmentos y lanza el pegado en Quark."""
-
-        # --- En perfil Maquetación ---
-        if self.controller.perfil == "Maquetación y avisos":
-            self.on_abrir_imagen()
-            return
 
         pagina = self.pagina_activa
         indice = getattr(self, "_noticia_index", 0)
@@ -5596,6 +5530,13 @@ class MainWindow(QMainWindow):
             self.controller.marcar_pegadas(pagina, subfolder, texto)
             # Recargar estado en memoria
             self._fotos_estado = self.controller.cargar_estado_fotos_pagina(pagina, subfolder)
+            # Overlay de info de página (arrastrable, con checklist) al pegar.
+            try:
+                self.qr_overlay = start_overlay(
+                    info=self._info_composicion_pagina(), auto_info=True
+                )
+            except Exception as e:
+                _log.warning("No se pudo abrir el overlay de info al pegar: %s", e)
 
         self.showMinimized()
         self.mostrar_fragmentos(pagina)
@@ -5858,24 +5799,18 @@ class MainWindow(QMainWindow):
             # (3) resto, alfabético
             return (3, 0, name)
 
-        # En Maquetación incluimos avisos raíz + imágenes de noticia
-        if self.controller.perfil == "Maquetación y avisos":
-            imgs_raiz = self.controller.file_service.list_material_images_for_page(self.pagina_activa)
-
-            # fusionar sin duplicados
-            nombres = set()
-            fusion = []
-            for p in imgs_raiz + imgs_noticia:
-                if p.name.lower() not in nombres:
-                    nombres.add(p.name.lower())
-                    fusion.append(p)
-
-            # aplicar mismo orden que gather_images_for_page
-            _imgs = sorted(fusion, key=ordenar)
-
-        else:
-            # Noticia normal: solo imágenes de la subcarpeta
-            _imgs = sorted(imgs_noticia, key=ordenar)
+        # Imágenes de la noticia primero (ordenadas); las imágenes de aviso (materiales
+        # raíz de la página) van al FINAL de la lista.
+        _imgs = sorted(imgs_noticia, key=ordenar)
+        try:
+            imgs_aviso = self.controller.file_service.list_material_images_for_page(self.pagina_activa)
+        except Exception:
+            imgs_aviso = []
+        _vistos = {p.name.lower() for p in _imgs}
+        for p in sorted(imgs_aviso, key=lambda f: f.name.lower()):
+            if p.name.lower() not in _vistos:
+                _vistos.add(p.name.lower())
+                _imgs.append(p)
 
 
         # --- Inicializar visor ---
@@ -6104,6 +6039,8 @@ class MainWindow(QMainWindow):
     def on_mover(self):
         if not getattr(self, "base_activa", False):
             return
+        if self._bloqueado_por_edicion(self.pagina_activa):
+            return
         pag = self.controller.gestor_paginas.get_activa()
         if not pag:
             return
@@ -6142,6 +6079,8 @@ class MainWindow(QMainWindow):
 
     def on_devolver(self):
         if not getattr(self, "base_activa", False):
+            return
+        if self._bloqueado_por_edicion(self.pagina_activa):
             return
         pag = self.controller.gestor_paginas.get_activa()
         if not pag:
@@ -6495,6 +6434,45 @@ class MainWindow(QMainWindow):
             ("Sección y página", seccion_pagina),
             ("Aviso", aviso),
         ]}
+
+    def _info_composicion_pagina(self):
+        """Info ampliada del overlay al pegar: Sección, Fecha, Textuales/Dato/Número,
+        Foto/s, Aviso, QR. Las cápsulas se apilan hacia arriba (índice 0 = abajo), así
+        que la lista se invierte para que 'Sección' quede arriba en orden de lectura."""
+        n = getattr(self, "pagina_activa", None)
+        if not n:
+            return {"filas": []}
+        try:
+            comp = self.controller.composicion_pagina(n, self._subfolder_activo())
+        except Exception:
+            comp = {}
+        filas = [
+            ("Sección", comp.get("seccion") or "—"),
+            ("Fecha", comp.get("fecha") or "—"),
+        ]
+        if comp.get("textual"):
+            cargo = (comp.get("textual_cargo") or "").strip()
+            filas.append(("Textuales", f"{comp['textual']}{(' — ' + cargo) if cargo else ''}"))
+        if comp.get("dato"):
+            filas.append(("Dato", "Sí"))
+        if comp.get("numero"):
+            filas.append(("Número", "Sí"))
+        if comp.get("foto_cant") or comp.get("foto_tipo"):
+            n = comp.get("foto_cant", 0)
+            nombres = comp.get("foto_nombres") or []
+            tipo = (comp.get("foto_tipo") or "").strip()
+            partes = [f"{n} {'imagen' if n == 1 else 'imágenes'}"]
+            if nombres:
+                etq = "nombre" if len(nombres) == 1 else "nombres"
+                partes.append(f"{etq} {', '.join(nombres)}")
+            if tipo:
+                partes.append(f"a {tipo}")
+            filas.append(("Foto", ", ".join(partes)))
+        if comp.get("aviso"):
+            filas.append(("Aviso", comp["aviso"]))
+        if comp.get("qr"):
+            filas.append(("Tiene QR", ""))
+        return {"filas": list(reversed(filas))}
 
     def _activate_qr_mode(self):
         """Abre el overlay del lector de QR (sin detección automática; cierre manual

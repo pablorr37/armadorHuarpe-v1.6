@@ -50,7 +50,6 @@ class PoolNota:
 class ArmadorController:
     def __init__(self):
         self.usuario = ""   # se setea al crear/actualizar base o al configurar usuario
-        self.perfil = "Armado y corrección"
         self.gestor_paginas = GestorPaginas()
         self.rutas = RutasEstado()
         self.file_service = FileService({})
@@ -1204,6 +1203,11 @@ class ArmadorController:
             pag.tapa_titulo = bool(entry.get("tapa_titulo", False))
             pag.listo_para_armar = bool(entry.get("listo_para_armar", False))
             pag.editando = bool(entry.get("editando", False))
+            pag.editando_por = (entry.get("editando_por") or "").strip()
+            _me_ed = (self.usuario or "").strip().lower()
+            pag.editando_por_otro = bool(
+                pag.editando and pag.editando_por and pag.editando_por.lower() != _me_ed
+            )
 
             # Intentar mover aviso desde base → materiales
             #if pag.aviso_nombre:
@@ -1537,7 +1541,12 @@ class ArmadorController:
                     setattr(pag, k, v)
                     hubo_cambio = True
 
-            if cambios["armado"] and getattr(pag, "listo_para_armar", False):
+            # --- Leer INI una vez para esta página ---
+            entry = self.file_service.read_page_entry(i)
+
+            # qxp detectado en base → ya no está "listo para armar". Se mira el INI
+            # (no el flag en memoria, que puede quedar desincronizado).
+            if cambios["armado"] and str(entry.get("listo_para_armar", "")).strip().lower() == "true":
                 pag.listo_para_armar = False
                 try:
                     self.file_service.write_page_entry(i, listo_para_armar="false")
@@ -1546,7 +1555,6 @@ class ArmadorController:
                 hubo_cambio = True
 
             # --- NUEVO BLOQUE ---
-            entry = self.file_service.read_page_entry(i)
             estado_ini = (entry.get("estado") or "").strip().lower()
 
             # Calcular nuevo estado detectado en disco
@@ -1619,7 +1627,7 @@ class ArmadorController:
         considerando el perfil activo y posibles spreads.
         Evita búsquedas innecesarias en páginas sin pareja (1 y 16).
         """
-        decision = self.file_service.decidir_mover_y_devolver(numero, perfil=self.perfil)
+        decision = self.file_service.decidir_mover_y_devolver(numero)
         
         # 🔹 Guard clause: páginas fuera de rango o sin pareja posible
         if not (1 <= numero <= 16) or numero in (1, 16):
@@ -1717,10 +1725,48 @@ class ArmadorController:
     def composicion_pagina(self, numero: int, subfolder: Optional[str] = None) -> dict:
         """Resumen de composición de la nota principal de la página (para el overlay del QR
         al pegar y el aviso final del script de pegado):
-        {textual: <tipo|None>, dato: bool, numero: bool, foto_tipo: str, firma: bool}."""
-        comp = {"textual": None, "dato": False, "numero": False,
-                "foto_tipo": "", "firma": False}
+        {seccion, fecha, textual: <tipo|None>, textual_cargo, dato, numero,
+         foto_tipo, foto_cant, firma, aviso, qr}."""
+        comp = {"seccion": "", "fecha": "", "textual": None, "textual_cargo": "",
+                "dato": False, "numero": False, "foto_tipo": "", "foto_cant": 0,
+                "foto_nombres": [], "firma": False, "aviso": "", "qr": False}
         try:
+            entry = self.file_service.read_page_entry(numero)
+            comp["seccion"] = (entry.get("seccion") or "").strip()
+            # --- Aviso (nombre + tipo) ---
+            aviso_nombre = (entry.get("aviso_nombre") or "").strip()
+            if aviso_nombre:
+                if entry.get("aviso_full"):
+                    tipo_av = "Completa"
+                elif entry.get("aviso_half"):
+                    tipo_av = "Media"
+                elif entry.get("aviso_footer"):
+                    tipo_av = "Pie"
+                elif entry.get("aviso_robapagina"):
+                    tipo_av = "Robapágina"
+                else:
+                    tipo_av = ""
+                comp["aviso"] = f"{aviso_nombre} ({tipo_av})" if tipo_av else aviso_nombre
+            # --- Fecha de edición ---
+            try:
+                fe = getattr(self.rutas, "fecha_edicion", None)
+                if fe:
+                    comp["fecha"] = fe.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+            # --- Cantidad de fotos seleccionadas ---
+            try:
+                mat = self._mat()
+                if mat:
+                    sel = self.foto_pagina_service.cargar(numero, subfolder, mat)
+                    fotos = sel.get("fotos", [])
+                    comp["foto_cant"] = len(fotos)
+                    comp["foto_nombres"] = [
+                        (f.get("nombre") or "").strip()
+                        for f in fotos if (f.get("nombre") or "").strip()
+                    ]
+            except Exception:
+                pass
             for nota in self.file_service.get_notas(numero):
                 if (nota.get("rol") or "").lower() != "principal":
                     continue
@@ -1729,12 +1775,15 @@ class ArmadorController:
                     break
                 nd = json.loads(jp.read_text(encoding="utf-8"))
                 tx = nd.get("textual")
-                comp["textual"] = (tx.get("tipo") if isinstance(tx, dict) else None) or None
+                if isinstance(tx, dict):
+                    comp["textual"] = tx.get("tipo") or None
+                    comp["textual_cargo"] = (tx.get("cargo1") or tx.get("nombre1") or "").strip()
                 dato = nd.get("dato")
                 comp["dato"] = bool(dato.strip()) if isinstance(dato, str) else bool(dato)
                 comp["numero"] = bool(nd.get("numero"))
                 comp["foto_tipo"] = (nd.get("foto_tipo") or "").strip()
                 comp["firma"] = bool(nd.get("firma_habilitada"))
+                comp["qr"] = bool(nd.get("qr_path") or (nd.get("_debug_qr") or {}).get("qrLinks"))
                 break
         except Exception as e:
             _log.debug("composicion_pagina P%02d: %s", numero, e)
@@ -1928,9 +1977,26 @@ class ArmadorController:
                 except Exception as e:
                     _log.warning("No se pudo resolver maqueta P%02d: %s", numero, e)
 
+            # --- Fecha de edición (formato Quark, calculada en Python para no adelantar
+            #     un día cuando el armado se hace pasada la medianoche). ---
+            fecha_texto = ""
+            try:
+                fe = getattr(self.rutas, "fecha_edicion", None)
+                if fe:
+                    _dias = ["LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES",
+                             "SÁBADO", "DOMINGO"]
+                    _meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+                              "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE",
+                              "DICIEMBRE"]
+                    fecha_texto = (f"{_dias[fe.weekday()]} {fe.day} DE "
+                                   f"{_meses[fe.month - 1]} DE {fe.year}")
+            except Exception as e:
+                _log.debug("No se pudo derivar fecha de edición P%02d: %s", numero, e)
+
             data = {
                 "numero_pagina":      numero,
                 "seccion":            seccion,
+                "fecha":              fecha_texto,
                 "usuario":            getpass.getuser(),
                 "tiene_texto":        bool(tiene_texto),
                 "maqueta":            nombre_maqueta,
@@ -2075,9 +2141,6 @@ class ArmadorController:
 
 
     # ---------- Perfil / selección / asignaciones ----------
-    def cambiar_perfil(self, nuevo_perfil: str):
-        self.perfil = nuevo_perfil
-
     def seleccionar_pagina(self, numero: int):
         self.gestor_paginas.set_pagina_activa(numero)
         pagina = self.gestor_paginas.obtener_pagina(numero)
@@ -2103,6 +2166,13 @@ class ArmadorController:
         pagina.asignada_por_ini_user = by_ini
         pagina.asignada_por_otro = bool(assigned_ini and by_ini and by_ini.strip().lower() != me)
         # Fin de parte rara
+
+        # Edición por otro usuario (guard de asignar/mover/eliminar)
+        editando = bool(entry.get("editando", False))
+        editando_por = (entry.get("editando_por") or "").strip()
+        pagina.editando = editando
+        pagina.editando_por = editando_por
+        pagina.editando_por_otro = bool(editando and editando_por and editando_por.lower() != me)
         return pagina
 
     ### ESTA FUNCION NO PARECE SER USADA ###
@@ -2139,10 +2209,12 @@ class ArmadorController:
         
 
     def mover_pagina(self, numero: int):
+        # (optimista en memoria; el movimiento real lo hace file_service.ejecutar_mover +
+        # verificar_qxp_pdf que relee disco). Sin perfiles.
         pagina = self.gestor_paginas.obtener_pagina(numero)
-        if self.perfil == "Armado y corrección" and pagina.asignado and not pagina.armado:
+        if pagina.asignado and not pagina.armado:
             pagina.armado = True
-        elif self.perfil == "Maquetación y avisos" and pagina.armado and not pagina.fotocromia:
+        elif pagina.armado and not pagina.fotocromia:
             pagina.fotocromia = True
 
     def devolver_pagina(self, numero: int):

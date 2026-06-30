@@ -23,25 +23,26 @@ class Pagina:
     tapa_titulo: bool = False
     listo_para_armar: bool = False
     editando: bool = False
+    editando_por: str = ""
+    editando_por_otro: bool = False
     mono_extra: str = ""
     seccion: str = ""
     estado: str = ""
 
     def estado_actual(self) -> str:
+        # Nombres por ubicación (sistema unificado, sin perfiles).
         if self.impreso:
-            return "impreso"
+            return "ok"
         if self.revisado:
-            return "revisado"
+            return "imprenta"
         if self.apdf:
             return "apdf"
         if self.corregido:
-            return "corregido"
+            return "mandar"
         if self.fotocromia:
-            return "fotocromia"
+            return "final"
         if self.armado:
-            return "armado"
+            return "base"
         if self.asignado:
-            return "asignado"
-        if self.azul:
-            return "azul"
+            return "txt"
         return "vacío"

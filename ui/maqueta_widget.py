@@ -690,11 +690,16 @@ class MaquetaWidget(QWidget):
             painter.drawPixmap(x, y, scaled)
             return
 
-        # === Si no hay imagen pero hay tipo de aviso → pintar área naranja ===
+        # === Si no hay imagen pero hay tipo de aviso → pintar área naranja (modelo) ===
         if area_aviso is not None:
-            painter.fillRect(area_aviso, naranja)
+            area_modelo = area_aviso
+            # Aviso COMPLETO: dejar ~2% de espacio entre el botón/celda y el modelo naranja.
+            if getattr(pagina, "aviso_full", False):
+                m = min(area_aviso.width(), area_aviso.height()) * 0.02
+                area_modelo = area_aviso.adjusted(m, m, -m, -m)
+            painter.fillRect(area_modelo, naranja)
             painter.setPen(QPen(Qt.black, 0.1))
-            painter.drawRect(area_aviso)
+            painter.drawRect(area_modelo)
 
 
 

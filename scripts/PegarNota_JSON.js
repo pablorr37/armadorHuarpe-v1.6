@@ -33,6 +33,7 @@
     // =========================================================
     var seccion = "SIN SECCIÓN";
     var username = "usuario";
+    var fechaTexto = "";    // fecha calculada por Python (evita adelantar un día pasada la medianoche)
     var numeroPagina = 0;
     var avisos = [];
     var fotos = [];
@@ -64,6 +65,7 @@
         var data = JSON.parse(contenido);
         numeroPagina = parseInt(data.numero_pagina || 0);
         seccion = (data.seccion || "").trim();
+        fechaTexto = (data.fecha || "").trim();
         username = (data.usuario || "usuario").trim();
         avisos = data.avisos || [];
         fotos = data.fotos || [];
@@ -207,9 +209,9 @@ function normalizeWinPath(p) {
 function toFileUrl(p) {
   p = normalizeWinPath(p);
 
-  // Escapar lo que rompe el file:// en el motor de Quark: espacios y '#'.
-  // No tocamos acentos: la carpeta acentuada (EDICIÓN Nº…) ya carga bien.
-  p = p.replace(/ /g, "%20").replace(/#/g, "%23");
+  // Path CRUDO (literal, con espacios reales). Quark resuelve el file:// con el path
+  // sin percent-encoding; escapar a %20 rompía todas las rutas (carpetas de edición
+  // tienen espacios) y por eso no pegaban fotos ni avisos.
 
   // Drive-letter: Z:/... -> file:///Z:/...
   if (/^[A-Za-z]:\//.test(p)) {
@@ -323,11 +325,16 @@ function setImagenEnBox(boxName, filePath) {
       if (!p) return;
       var span = p.getElementsByTagName("qx-span")[0];
       if (!span) { span = document.createElement("qx-span"); p.appendChild(span); }
-      var meses = ["ENERO","FEBRERO","MARZO","ABRIL","MAYO","JUNIO","JULIO","AGOSTO","SEPTIEMBRE","OCTUBRE","NOVIEMBRE","DICIEMBRE"];
-      var dias = ["DOMINGO","LUNES","MARTES","MIÉRCOLES","JUEVES","VIERNES","SÁBADO"];
-      var hoy = new Date(); hoy.setDate(hoy.getDate() + 1);
-      var fechaTexto = dias[hoy.getDay()] + " " + hoy.getDate() + " DE " + meses[hoy.getMonth()] + " DE " + hoy.getFullYear();
-      span.textContent = fechaTexto;
+      // Preferir la fecha calculada por Python (viaja en data.fecha). Si no vino,
+      // fallback al cálculo local new Date()+1 (compatibilidad).
+      var texto = fechaTexto;
+      if (!texto) {
+        var meses = ["ENERO","FEBRERO","MARZO","ABRIL","MAYO","JUNIO","JULIO","AGOSTO","SEPTIEMBRE","OCTUBRE","NOVIEMBRE","DICIEMBRE"];
+        var dias = ["DOMINGO","LUNES","MARTES","MIÉRCOLES","JUEVES","VIERNES","SÁBADO"];
+        var hoy = new Date(); hoy.setDate(hoy.getDate() + 1);
+        texto = dias[hoy.getDay()] + " " + hoy.getDate() + " DE " + meses[hoy.getMonth()] + " DE " + hoy.getFullYear();
+      }
+      span.textContent = texto;
     }
 
     function setSoloBajadaEnBox(boxName, texto) {
@@ -572,6 +579,47 @@ function setImagenEnBox(boxName, filePath) {
       }
     }
 
+    // Extrae frases entre comillas (tipográficas “…” o rectas "…") de un string.
+    function _extraerEntreComillas(s) {
+      var out = [];
+      if (!s) return out;
+      var re = /“([^”]+)”|"([^"]+)"/g;
+      var m;
+      while ((m = re.exec(s)) !== null) {
+        var frase = (m[1] || m[2] || "").trim();
+        if (frase) out.push(frase);
+      }
+      return out;
+    }
+
+    // Textuales dedicados de Café de la Política: las dos primeras citas auto
+    // (notaPrincipal.textuales_auto) van a sus box dedicados. El set depende de si
+    // la página lleva aviso de pie (tipo pie) o no (tipo vacía). Cada textual tiene
+    // 3 variantes de box; el que exista en la maqueta lo toma.
+    function pegarTextualesCafePolitica() {
+      var auto = (notaPrincipal && notaPrincipal.textuales_auto) ? notaPrincipal.textuales_auto : [];
+      var t1 = cleanHTML(auto[0] || "");
+      var t2 = cleanHTML(auto[1] || "");
+      // Si no vinieron dos textuales separados, puede que las dos citas vengan unidas
+      // en un mismo slot (p.ej. “Frase A”.“Frase B”). Separarlas por pares de comillas.
+      if (!t1 || !t2) {
+        var fuente = "";
+        for (var k = 0; k < auto.length; k++) { if (auto[k]) fuente += " " + auto[k]; }
+        var frases = _extraerEntreComillas(fuente);
+        if (frases.length >= 2) {
+          t1 = cleanHTML(frases[0]);
+          t2 = cleanHTML(frases[1]);
+        } else if (frases.length === 1 && !t1) {
+          t1 = cleanHTML(frases[0]);
+        }
+      }
+      var pie = tienePie();
+      var BOXES_T1 = pie ? ["Box2086", "Box2074", "Box2080"] : ["Box2008", "Box2017", "Box2025"];
+      var BOXES_T2 = pie ? ["Box2087", "Box2075", "Box2081"] : ["Box2009", "Box2018", "Box2026"];
+      for (var i = 0; i < BOXES_T1.length; i++) { if (t1) setTextoEnBox(BOXES_T1[i], t1); }
+      for (var j = 0; j < BOXES_T2.length; j++) { if (t2) setTextoEnBox(BOXES_T2[j], t2); }
+    }
+
     // =========================================================
     // 🔹 Textuales, dato y número estructurados
     // =========================================================
@@ -697,6 +745,11 @@ function setImagenEnBox(boxName, filePath) {
       else if (seccionNorm === "cafe de la politica") rutinaCafePolitica();
       else if (seccionNorm === "eco huarpe")       rutinaEcoHuarpe();
     }
+
+    // Café de la Política: la maqueta es universal (texto/foto/aviso se pegan por la
+    // rama universal); lo único dedicado son sus dos textuales, que se pegan acá sin
+    // importar por qué rama se hizo el pegado.
+    if (seccionNorm === "cafe de la politica") pegarTextualesCafePolitica();
 
     if (_hits === 0) {
       var _uniq = _faltantes.filter(function (v, i) { return _faltantes.indexOf(v) === i; });
@@ -827,11 +880,6 @@ function setImagenEnBox(boxName, filePath) {
     // =========================================================
     function rutinaCafePolitica() {
 
-      // ===== Capturar textuales sin tocar el cuerpo =====
-      var listaTextuales = extractTextuales(cuerpo) || [];
-      var textual1 = listaTextuales.length > 0 ? listaTextuales[0] : "";
-      var textual2 = listaTextuales.length > 1 ? listaTextuales[1] : "";
-
       // --- Página 1 ---
       setFecha("Box366");
       setTextoEnBox("Box1679", numeroPagina + " | " + seccion.toUpperCase());
@@ -859,10 +907,7 @@ function setImagenEnBox(boxName, filePath) {
       
       //avisos
       pegarAvisosEnSeccion(seccionNorm);
-    
-      // --- Textuales (legacy, extraídos del cuerpo) ---
-      setTextoEnBox("Box1866", textual1);
-      setTextoEnBox("Box1867", textual2);
+
       if (tienePie()) { pegarFotosConPie(); } else { pegarFotoPrincipal(); }
       if (notaPrincipal) pegarTextualDatoNumero(notaPrincipal);
     }

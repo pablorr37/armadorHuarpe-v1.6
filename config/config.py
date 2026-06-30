@@ -138,6 +138,27 @@ class Config:
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 
+    @property
+    def qr_overlay_pos(self):
+        """(x, y) guardado de la columna de íconos del overlay QR, o None."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        try:
+            return (cfg.getint("GENERAL", "qr_overlay_x"),
+                    cfg.getint("GENERAL", "qr_overlay_y"))
+        except Exception:
+            return None
+
+    def save_qr_overlay_pos(self, x: int, y: int) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "GENERAL" not in cfg:
+            cfg["GENERAL"] = {}
+        cfg["GENERAL"]["qr_overlay_x"] = str(int(x))
+        cfg["GENERAL"]["qr_overlay_y"] = str(int(y))
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
     def save_maqueta_config(self, data: dict):
         cfg = configparser.ConfigParser()
         cfg.read(self.CONFIG_FILE, encoding="utf-8")
