@@ -1681,6 +1681,8 @@ class FileService:
             txt_name=txt_name,
             aviso_full=False if apagar_aviso_full else entry.get("aviso_full"),
             estado="proceso",
+            # Asignar (user o bot) resetea 'listo para armar': el contenido cambió/reasignó.
+            listo_para_armar="false",
             by=(by or entry.get("by") or "")
         )
         # Copiar maqueta según aviso/sección
@@ -2097,6 +2099,22 @@ class FileService:
         if not base.exists():
             return None
         return self.buscar_qxp_por_numero(base, numero)
+
+
+    def mejor_qxp_para_pegar(self, numero: int) -> Optional[Path]:
+        """QXP más adelantado por estado (para abrir y pegar). Nunca devuelve PDF/TXT.
+
+        Prioridad: a pdf → mandar → final → base numérico ('NN.qxp', el mismo archivo
+        que avanza el Mover) → materiales/Pnn. 'materiales/Pnn' es el control del primer
+        armado y es el último recurso: solo se abre si no hay nada más adelantado.
+        """
+        return (
+            self.find_qxp_apdf(numero)
+            or self.find_qxp_mandar(numero)
+            or self.find_qxp_final(numero)
+            or self.find_qxp_base_numerico(numero)
+            or self.find_qxp_en_materiales(numero)
+        )
 
 
 

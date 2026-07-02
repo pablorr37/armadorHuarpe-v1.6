@@ -1794,6 +1794,18 @@ class ArmadorController:
             _log.debug("composicion_pagina P%02d: %s", numero, e)
         return comp
 
+    def _box_positions_para_js(self) -> dict:
+        """P6a (spike): mapea box-name → posición destino (coords de PANTALLA calibradas) para
+        que el JS pruebe mover cajas. Test inicial: Box427 (textual simple) → 'textual_dst_1'."""
+        pos = {}
+        try:
+            p = config_global.auto_centro("textual_dst_1")
+            if p:
+                pos["Box427"] = {"x": int(p[0]), "y": int(p[1])}
+        except Exception:
+            pass
+        return pos
+
     def _preparar_data_pagina(self, numero: int, tiene_texto: bool = True,
                                subfolder: Optional[str] = None,
                                excluir_fotos: bool = False):
@@ -2011,6 +2023,9 @@ class ArmadorController:
                 "notas":              notas_data,
                 "composicion":        self.composicion_pagina(numero, subfolder),
                 "foto_box_principal": config_global.maqueta_config.get("foto_box_principal", "Box369"),
+                # P6a (spike): posiciones destino (coords de pantalla calibradas) para que el JS
+                # intente mover cajas. Test inicial: Box427 (textual solo) → 'textual_dst_1'.
+                "box_positions":      self._box_positions_para_js(),
             }
 
             ruta_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

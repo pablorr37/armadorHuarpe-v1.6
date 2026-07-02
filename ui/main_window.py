@@ -41,7 +41,7 @@ from pathlib import Path
 from ui.dialogo_mono import DialogoMono
 from services.shortcut_manager import ShortcutManager
 from services.chrome_watcher import ChromeWatcher
-from config.config import Config
+from config.config import Config, config_global
 from utils.app_logger import get_logger
 
 from datetime import datetime
@@ -834,6 +834,14 @@ COLOR_ESTADOS = {
     "vacío":           "#2d2f30",   # gris oscuro — nada
 }
 
+# Overrides de color por PERFIL. Centinela "ASIGNADO" = "sin color propio → celeste/blanco"
+# (respeta propio/remoto). Lo no listado usa COLOR_ESTADOS (verde/verde claro/gris son universales).
+PERFIL_OVERRIDES = {
+    "armado":      {"base": "ASIGNADO", "mandar": "ASIGNADO", "apdf": "ASIGNADO"},
+    "maquetacion": {"final": "ASIGNADO"},
+    "editor":      {},
+}
+
        # Estilo visual tipo toggle
 
 style_btn = """
@@ -1088,6 +1096,70 @@ class MainWindow(QMainWindow):
 
         # Insertar submenú en el menú Configuración existente
         menu_config.addMenu(menu_quark)
+
+        # === Armado automático (debajo de Seleccionar Quark) ===
+        menu_auto = QMenu("Armado automático", self)
+        self.act_auto_on = QAction("Activo", self, checkable=True)
+        self.act_auto_off = QAction("Inactivo", self, checkable=True)
+        _auto_activo = config_global.auto_mode_enabled
+        self.act_auto_on.setChecked(_auto_activo)
+        self.act_auto_off.setChecked(not _auto_activo)
+        grupo_auto = QActionGroup(self)
+        grupo_auto.addAction(self.act_auto_on)
+        grupo_auto.addAction(self.act_auto_off)
+        grupo_auto.setExclusive(True)
+        self.act_auto_on.triggered.connect(lambda: self._set_modo_auto(True))
+        self.act_auto_off.triggered.connect(lambda: self._set_modo_auto(False))
+        menu_auto.addAction(self.act_auto_on)
+        menu_auto.addAction(self.act_auto_off)
+        menu_auto.addSeparator()
+        self.act_auto_simular = QAction("Simulación (no toca mouse/teclado)", self, checkable=True)
+        self.act_auto_simular.setChecked(config_global.auto_mode_simular)
+        self.act_auto_simular.triggered.connect(self._set_modo_auto_simular)
+        menu_auto.addAction(self.act_auto_simular)
+        act_calibrar_auto = QAction("Calibrar", self)
+        act_calibrar_auto.triggered.connect(self._on_calibrar_auto)
+        menu_auto.addAction(act_calibrar_auto)
+        act_calibrar_agarre = QAction("Calibrar agarre (maqueta de prueba)", self)
+        act_calibrar_agarre.triggered.connect(self._on_calibrar_agarre)
+        menu_auto.addAction(act_calibrar_agarre)
+
+        # Submenú Configuración → Tiempo de espera antes de lanzar el armado automático.
+        menu_auto.addSeparator()
+        menu_config_auto = QMenu("Configuración", self)
+        menu_delay = QMenu("Tiempo de espera antes de lanzar armado automático", self)
+        grupo_delay = QActionGroup(self)
+        grupo_delay.setExclusive(True)
+        _delay_actual = config_global.auto_delay_segundos
+        self._acts_auto_delay = {}
+        for _seg in config_global.AUTO_DELAY_OPCIONES:
+            act = QAction(f"{_seg} segundos", self, checkable=True)
+            act.setChecked(_seg == _delay_actual)
+            act.triggered.connect(lambda _checked, s=_seg: self._set_auto_delay(s))
+            grupo_delay.addAction(act)
+            menu_delay.addAction(act)
+            self._acts_auto_delay[_seg] = act
+        menu_config_auto.addMenu(menu_delay)
+        menu_auto.addMenu(menu_config_auto)
+
+        menu_config.addMenu(menu_auto)
+
+        # === Perfil (colores de estado de la grilla) ===
+        self._perfil_colores = config_global.perfil_colores
+        menu_perfil = QMenu("Perfil", self)
+        grupo_perfil = QActionGroup(self)
+        grupo_perfil.setExclusive(True)
+        self._acts_perfil = {}
+        for clave, etiqueta in (("armado", "Armado y corrección"),
+                                ("maquetacion", "Maquetación y avisos"),
+                                ("editor", "Editor")):
+            act = QAction(etiqueta, self, checkable=True)
+            act.setChecked(self._perfil_colores == clave)
+            act.triggered.connect(lambda _=False, c=clave: self._set_perfil_colores(c))
+            grupo_perfil.addAction(act)
+            menu_perfil.addAction(act)
+            self._acts_perfil[clave] = act
+        menu_config.addMenu(menu_perfil)
 
 
 
@@ -1508,8 +1580,6 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.boton_devolver)
         toolbar.addWidget(self.boton_mover)
 
-
-
         right_v.addLayout(toolbar)
         
         # === GRILLA DE PÁGINAS (debajo de la botonera) ===
@@ -1553,6 +1623,30 @@ class MainWindow(QMainWindow):
         self._poll_thread = None
         self._poll_worker = None
         self._poll_running = False
+
+        # --- Modo automático (orquestador) ---
+        try:
+            from controller.auto_mode import AutoModeOrchestrator
+            self.auto_orq = AutoModeOrchestrator(
+                self._auto_asignar, self._auto_pegar_y_abrir, self._auto_coords,
+                fn_comp=self.controller.composicion_pagina,
+                fn_calibracion=self._auto_calibracion,
+                fn_finalizado_ok=self._auto_finalizado_ok,
+                fn_confirmar_inicio=self._auto_confirmar_inicio,
+                simular=config_global.auto_mode_simular, parent=self)
+            self.auto_orq.log.connect(lambda m: self.statusBar().showMessage(m, 4000))
+            self.auto_orq.estado.connect(lambda m: self.statusBar().showMessage(m, 4000))
+            # El auto puede apagarse solo (Esc×5 / fallo de foco) → reflejarlo en el menú.
+            self.auto_orq.apagado_auto.connect(self._on_auto_apagado)
+            # SIEMPRE arrancar con el Armado automático INACTIVO (se activa a mano por sesión).
+            config_global.save_auto_mode_enabled(False)
+            if getattr(self, "act_auto_on", None) is not None:
+                self.act_auto_on.setChecked(False)
+                self.act_auto_off.setChecked(True)
+            self.auto_orq.set_enabled(False)
+        except Exception as e:
+            _log.warning("No se pudo iniciar el Modo automático: %s", e)
+            self.auto_orq = None
 
         # --- Conexión automática a la base 1.5s después de iniciar ---
         QTimer.singleShot(1500, self._conectar_base_auto)
@@ -1993,6 +2087,20 @@ class MainWindow(QMainWindow):
                 f"No se encontró la ruta al ejecutable de {quark_sel}.\nVerificá la sección [apps] en config.ini."
             )
             return
+
+        # Si lo que se abre es un QXP, dejar preparado el pegado (data_pagina.json +
+        # runtime_config.json + nota.txt) por si el usuario quiere pegar/reemplazar algo
+        # en el qxp abierto. NO copia ni crea ningún qxp: solo escribe metadatos.
+        if resultado.suffix.lower() == ".qxp":
+            try:
+                indice = getattr(self, "_noticia_index", 0)
+                texto = self.controller._leer_y_normalizar(numero, indice) or ""
+                self.controller.pegar_en_quark(
+                    numero, indice, texto=texto,
+                    subfolder=self._subfolder_activo(), excluir_fotos=False
+                )
+            except Exception as e:
+                _log.warning("No se pudo preparar el pegado al abrir P%02d: %s", numero, e)
 
         # Abrir archivos según tipo
         abrio_pdf = False
@@ -5130,13 +5238,283 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 _log.warning(f"[WARN] No se pudo reactivar botón '+': {e}")
 
-
-
+        # --- Modo automático: alimentar el orquestador con las páginas listas ---
+        try:
+            if getattr(self, "auto_orq", None) is not None and self.auto_orq.enabled:
+                gp = self.controller.gestor_paginas
+                listas = [n for n in range(1, 17)
+                          if getattr(gp.obtener_pagina(n), "listo_para_armar", False)]
+                self.auto_orq.notificar_listas(listas)
+        except Exception as e:
+            _log.warning("[WARN] Modo automático notificar_listas: %s", e)
 
     def _on_poll_error(self, msg: str):
         self._poll_running = False
         # No frenes la app por errores de red: mostrás un aviso suave
         self.statusBar().showMessage(f"Problema al refrescar estados: {msg}", 4000)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Modo automático (Fase 1)
+    # ══════════════════════════════════════════════════════════════════
+    def _set_modo_auto(self, activo: bool):
+        config_global.save_auto_mode_enabled(bool(activo))
+        # Reflejar en las acciones del menú (por si se llamó desde otro lado).
+        if getattr(self, "act_auto_on", None) is not None:
+            self.act_auto_on.setChecked(activo)
+            self.act_auto_off.setChecked(not activo)
+        if getattr(self, "auto_orq", None) is None:
+            return
+        if activo and not self.auto_orq.calibrado():
+            QMessageBox.information(
+                self, "Armado automático",
+                "Antes de usar el Armado automático, calibrá al menos el botón Play del "
+                "palette JavaScript con Configuración → Armado automático → Calibrar.")
+        self.auto_orq.set_enabled(activo)
+
+    def _set_perfil_colores(self, clave: str):
+        """Cambia el perfil de colores de estado, lo persiste y repinta la grilla."""
+        clave = clave if clave in ("armado", "maquetacion", "editor") else "editor"
+        self._perfil_colores = clave
+        config_global.save_perfil_colores(clave)
+        act = getattr(self, "_acts_perfil", {}).get(clave)
+        if act is not None:
+            act.setChecked(True)
+        self.colorear_paginas()
+
+    def _on_auto_apagado(self, motivo: str):
+        """El Armado automático se apagó solo (Esc×5 / fallo de foco): reflejar en el menú
+        y persistir Inactivo. No re-llama a set_enabled (el orquestador ya se apagó)."""
+        config_global.save_auto_mode_enabled(False)
+        if getattr(self, "act_auto_on", None) is not None:
+            self.act_auto_on.setChecked(False)
+            self.act_auto_off.setChecked(True)
+        self.statusBar().showMessage(motivo or "Armado automático apagado.", 8000)
+
+    def _set_modo_auto_simular(self, valor: bool):
+        config_global.save_auto_mode_simular(bool(valor))
+        if getattr(self, "act_auto_simular", None) is not None:
+            self.act_auto_simular.setChecked(valor)
+        if getattr(self, "auto_orq", None) is not None:
+            self.auto_orq.set_simular(valor)
+        self.statusBar().showMessage(
+            "Armado automático: SIMULACIÓN activada (solo logs)." if valor
+            else "Armado automático: simulación desactivada (ejecución real).", 5000)
+
+    def _set_auto_delay(self, segundos: int):
+        """Persiste el tiempo de espera (cuenta regresiva) antes de lanzar el armado auto."""
+        config_global.save_auto_delay_segundos(segundos)
+        seg = config_global.auto_delay_segundos
+        act = getattr(self, "_acts_auto_delay", {}).get(seg)
+        if act is not None:
+            act.setChecked(True)
+        self.statusBar().showMessage(
+            f"Armado automático: aviso de {seg} s antes de lanzar el pegado.", 4000)
+
+    def _auto_confirmar_inicio(self, numero) -> bool:
+        """Gate previo al pegado (hilo GUI): muestra la cuenta regresiva cancelable.
+        Devuelve True si el usuario deja continuar o expira; False si cancela.
+        En simulación no toma el control real → no molesta con el diálogo."""
+        try:
+            if config_global.auto_mode_simular:
+                return True
+            seg = config_global.auto_delay_segundos
+            if seg <= 0:
+                return True
+            from ui.countdown_dialog import CountdownDialog
+            dlg = CountdownDialog(seg, numero=numero, parent=self)
+            return dlg.exec_() == QDialog.Accepted
+        except Exception as e:
+            _log.warning("Cuenta regresiva P%s falló: %s", numero, e)
+            return True
+
+    def _on_calibrar_auto(self):
+        """Lanza el asistente de calibración por áreas (overlay flotante)."""
+        try:
+            from ui.calibrador_overlay import lanzar_calibrador
+        except Exception as e:
+            QMessageBox.warning(self, "Calibrar", f"No se pudo abrir el calibrador:\n{e}")
+            return
+        QMessageBox.information(
+            self, "Calibrar Armado automático",
+            "Se abrirá una capa transparente sobre Quark (no lo oscurece ni lo toca) más "
+            "un panel flotante con el paso actual.\n\n"
+            "Para cada paso: hacé un CLIC sobre el punto (ítems del palette) o ARRASTRÁ un "
+            "rectángulo sobre el recurso/destino. El clic solo guarda la coordenada, no "
+            "interactúa con Quark. Podés ir Atrás, Saltar los recursos que no uses, mover "
+            "el panel o cancelar con Esc.\n\n"
+            "IMPORTANTE: elegí un ZOOM que permita ver las 3 plantillas y TODOS los recursos "
+            "a la vez (22% en 1366×768). Usá «Maqueta especial» para calibrar una sección con "
+            "su maqueta propia, y «Maquetas excluidas» para las que no se automatizan.\n\n"
+            "Tené la maqueta de referencia abierta y maximizada en Quark.")
+
+        def _fin(guardados):
+            self.statusBar().showMessage(
+                f"Calibración terminada ({guardados} áreas/puntos guardados).", 5000)
+            QMessageBox.information(
+                self, "Calibración terminada",
+                f"Listo. Se guardaron {guardados} áreas/puntos de calibración.")
+
+        lanzar_calibrador(parent=self, on_finish=_fin)
+
+    def _on_calibrar_agarre(self):
+        """Corre la pasada de autocalibración del punto de agarre (B↔C) sobre la maqueta
+        abierta en Quark. Mueve el mouse: pedir confirmación antes."""
+        try:
+            from ui.calibrador_agarre import lanzar_calibrador_agarre
+        except Exception as e:
+            QMessageBox.warning(self, "Calibrar agarre",
+                                f"No se pudo abrir el calibrador de agarre:\n{e}")
+            return
+        r = QMessageBox.question(
+            self, "Calibrar agarre (maqueta de prueba)",
+            "Se calibrará DESDE DÓNDE agarra el bot cada recurso, comparando dónde termina "
+            "(B) contra dónde debería (C).\n\n"
+            "Requisitos:\n"
+            "• Tené la maqueta de prueba abierta y maximizada en Quark, al mismo zoom que la "
+            "calibración de áreas.\n"
+            "• Los recursos (origen y destino) ya deben estar calibrados.\n\n"
+            "El bot tomará el control del mouse: clona un recurso, lo arrastra, verifica la "
+            "posición (podés afinar arrastrando la imagen) y DESHACE el cambio. Mové el mouse "
+            "a una esquina para abortar.\n\n¿Continuar?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        try:
+            ajustados = lanzar_calibrador_agarre(parent=self)
+        except Exception as e:
+            _log.warning("Calibrar agarre falló: %s", e)
+            QMessageBox.warning(self, "Calibrar agarre", f"La calibración falló:\n{e}")
+            return
+        QMessageBox.information(
+            self, "Calibrar agarre",
+            f"Listo. Se ajustó el agarre de {ajustados} recurso(s).")
+
+    def _auto_coords(self):
+        return (config_global.auto_coord("script"), config_global.auto_coord("play"))
+
+    def _auto_calibracion(self, seccion: str = None) -> dict:
+        """Dict {clave -> punto (x,y)} para clics/arrastres del Armado automático.
+        Puntos del palette tal cual; áreas de recursos → su centro. Si la sección es una
+        maqueta especial (calibración propia), lee las claves prefijadas '{seccion}__{clave}'."""
+        from services.armado_auto_schema import pasos_expandidos, normalizar_seccion
+        sec = normalizar_seccion(seccion) if seccion else None
+        especiales = set(config_global.auto_especiales())
+        pref = f"{sec}__" if (sec and sec in especiales) else ""
+
+        calib: dict = {}
+        for paso in pasos_expandidos():
+            clave = paso["clave"]
+            k = pref + clave
+            if paso["tipo"] == "punto":
+                # script/play no se calibran por sección: usar siempre el global.
+                calib[clave] = config_global.auto_coord(clave)
+            else:
+                calib[clave] = config_global.auto_centro(k) or config_global.auto_centro(clave)
+        return calib
+
+    def _auto_finalizado_ok(self, numero: int):
+        """Post-armado OK (hilo GUI): trackear en INI, mover la página a Base y traer AH al frente.
+        Quark ya quedó minimizado por el worker."""
+        # Tracking: la página fue armada por el bot.
+        try:
+            self.controller.file_service.registrar_trabajo(numero, "bot", "Armado automático")
+        except Exception as e:
+            _log.warning("Auto P%02d: no se pudo registrar 'Armado automático': %s", numero, e)
+        if self._auto_mover_a_base(numero):
+            try:
+                self.controller.file_service.registrar_trabajo(numero, "bot", "En Base automático")
+            except Exception as e:
+                _log.warning("Auto P%02d: no se pudo registrar 'En Base automático': %s", numero, e)
+        self._traer_armador_al_frente()
+
+    def _auto_mover_a_base(self, numero: int) -> bool:
+        """Promueve la página armada de materiales/Pnn a Base (mismo camino que el botón manual).
+        Devuelve True si efectivamente la movió a Base."""
+        try:
+            fs = self.controller.file_service
+            dec = fs.decidir_mover_y_devolver(numero) or {}
+            mv = dec.get("mover") or {}
+            src, dest = mv.get("src"), mv.get("dest")
+            label = (mv.get("label") or "").strip()
+            if not (mv.get("enabled") and src and dest and "base" in label.lower()):
+                _log.info("Auto P%02d: no hay 'Mover a Base' disponible (label=%r).", numero, label)
+                return False
+            res = self.controller.ejecutar_mover(src, dest)
+            if res is True:
+                self._registrar_trabajo(numero, label.replace("\n", " "))
+                self.colorear_paginas()
+                _log.info("Auto P%02d: movida a Base.", numero)
+                return True
+            _log.warning("Auto P%02d: mover a Base devolvió %r.", numero, res)
+            return False
+        except Exception as e:
+            _log.warning("Auto mover a Base P%02d falló: %s", numero, e)
+            return False
+
+    def _traer_armador_al_frente(self):
+        """Trae ArmadorHuarpe al frente (tras minimizar Quark) SIN cambiar su estado.
+        Solo des-minimiza si estaba minimizada, preservando el bit Maximized (no restaura
+        una ventana que ya estaba maximizada)."""
+        try:
+            if self.isMinimized():
+                # Quitar solo el flag Minimized; conserva Maximized si lo tenía.
+                self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+            self.raise_()
+            self.activateWindow()
+        except Exception as e:
+            _log.warning("No se pudo traer ArmadorHuarpe al frente: %s", e)
+
+    def _auto_asignar(self, numero: int) -> bool:
+        """Asigna la página como 'bot' (sin diálogos). Respeta el guard 'asignada por otro':
+        si ya está asignada por un usuario distinto del bot, NO la toca."""
+        try:
+            fs = self.controller.file_service
+            entry = fs.read_page_entry(numero)
+            # Guard: página ya asignada por otro (humano u otra estación) → no armar.
+            by_prev = (entry.get("by") or "").strip().lower()
+            if entry.get("assigned") and by_prev and by_prev != "bot":
+                _log.info("Auto P%02d: ya asignada por '%s' → guard 'asignada por otro', se saltea.",
+                          numero, by_prev)
+                return False
+            if entry.get("aviso_full", False):
+                fs.mark_assigned(numero, txt_name="", by="bot", apagar_aviso_full=False)
+            else:
+                txt = fs.obtener_txt(numero)
+                if not txt or not txt.exists():
+                    return False
+                fs.mark_assigned(numero, txt.name, by="bot")
+            pag = self.controller.gestor_paginas.obtener_pagina(numero)
+            if pag:
+                pag.asignada_por_ini = True
+            return True
+        except Exception as e:
+            _log.warning("Auto asignar P%02d falló: %s", numero, e)
+            return False
+
+    def _auto_pegar_y_abrir(self, numero: int) -> bool:
+        """Prepara el pegado (JSON + nota) y abre el qxp de la página en Quark 2018."""
+        try:
+            indice = 0
+            frags = self.controller.obtener_fragmentos(numero, indice) or []
+            texto = "\n".join(frags).strip()
+            self.controller.pegar_en_quark(numero, indice, texto=texto,
+                                           subfolder=None, excluir_fotos=False)
+            qxp = self.controller.file_service.mejor_qxp_para_pegar(numero)
+            if not (qxp and qxp.exists()):
+                _log.warning("Auto P%02d: no hay qxp para abrir.", numero)
+                return False
+            cfg = configparser.ConfigParser()
+            cfg.read(str(Config.CONFIG_FILE), encoding="utf-8")
+            quark_exe = cfg.get("apps", "quark2018", fallback="").strip()
+            if not (quark_exe and Path(quark_exe).exists()):
+                _log.error("Auto P%02d: no se encontró el ejecutable de Quark 2018.", numero)
+                return False
+            subprocess.Popen([quark_exe, str(qxp)], shell=False)
+            self.controller.marcar_pegadas(numero, None, texto)
+            return True
+        except Exception as e:
+            _log.warning("Auto pegar/abrir P%02d falló: %s", numero, e)
+            return False
 
 
 
@@ -5197,14 +5575,27 @@ class MainWindow(QMainWindow):
 
 
 
+    def _color_estado_perfil(self, estado: str, pagina) -> str:
+        """Color del estado según el perfil activo. El centinela 'ASIGNADO' devuelve el color
+        de asignación (blanco si es de otro usuario, celeste si es propio)."""
+        perfil = getattr(self, "_perfil_colores", "editor")
+        val = PERFIL_OVERRIDES.get(perfil, {}).get(estado)
+        if val == "ASIGNADO":
+            if getattr(pagina, "asignada_por_otro", False):
+                return COLOR_ESTADOS["asignado_remoto"]
+            return COLOR_ESTADOS["asignado"]
+        if val:
+            return val
+        return COLOR_ESTADOS.get(estado, "#d3d3d3")
+
     def _apply_button_style_for_page(self, boton: QPushButton, pagina):
         estado = self._estado_visible(pagina)
         # Si la base aún no fue creada, forzar gris claro para todos
         if not getattr(self, "base_activa", False): 
             color_base = "#a8a8a8"   # gris claro inicial (antes de crear base)
         else:
-            color_base = COLOR_ESTADOS.get(estado, "#d3d3d3")
-        
+            color_base = self._color_estado_perfil(estado, pagina)
+
         # --- Detectar cambio de color (para forzar repaint solo si cambia) ---
         prev_color = getattr(boton, "_estado_color", None)
         if not prev_color or prev_color.name() != color_base:
@@ -5511,9 +5902,10 @@ class MainWindow(QMainWindow):
                 pagina, indice, texto=texto,
                 subfolder=subfolder, excluir_fotos=excluir_fotos
             )
-            # Apertura automática del QXP desde materiales/Pnn/
+            # Apertura automática del QXP más adelantado por estado (no siempre materiales):
+            # así el pegado cae en el mismo archivo que luego avanza el Mover.
             try:
-                qxp_path = self.controller.file_service.find_qxp_en_materiales(pagina)
+                qxp_path = self.controller.file_service.mejor_qxp_para_pegar(pagina)
                 if qxp_path and qxp_path.exists():
                     _log.info("Abriendo Quark con %s", qxp_path)
                     cfg2 = configparser.ConfigParser()

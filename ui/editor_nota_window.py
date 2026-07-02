@@ -914,7 +914,7 @@ class EditorNotaWindow(QMainWindow):
         self._btn_reanalizar.setCursor(Qt.PointingHandCursor)
         lay_tx.addWidget(self._btn_reanalizar)
 
-        self._btn_sel_textual = QPushButton("Seleccionar textual")
+        self._btn_sel_textual = QPushButton("Selección manual en texto")
         self._btn_sel_textual.setCheckable(True)
         self._btn_sel_textual.setCursor(Qt.PointingHandCursor)
         lay_tx.addWidget(self._btn_sel_textual)

@@ -186,6 +186,207 @@ class Config:
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 
+    # ----------------------------------------------------------
+    # Modo automático (armado autónomo en Quark)
+    # ----------------------------------------------------------
+    @property
+    def auto_mode_enabled(self) -> bool:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        return cfg.getboolean("AUTO", "enabled", fallback=False)
+
+    def save_auto_mode_enabled(self, enabled: bool) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"]["enabled"] = "true" if enabled else "false"
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    def auto_coord(self, clave: str):
+        """(x, y) calibrada de un clickable del palette JS (p.ej. 'play', 'script'), o None."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        try:
+            return (cfg.getint("AUTO", f"{clave}_x"), cfg.getint("AUTO", f"{clave}_y"))
+        except Exception:
+            return None
+
+    def save_auto_coord(self, clave: str, x: int, y: int) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"][f"{clave}_x"] = str(int(x))
+        cfg["AUTO"][f"{clave}_y"] = str(int(y))
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    @property
+    def auto_mode_simular(self) -> bool:
+        """Si True, el Armado automático corre en simulación (loguea, no toca mouse/teclado)."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        return cfg.getboolean("AUTO", "simular", fallback=False)
+
+    def save_auto_mode_simular(self, valor: bool) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"]["simular"] = "true" if valor else "false"
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    # Opciones válidas de espera (segundos) antes de lanzar el armado automático.
+    AUTO_DELAY_OPCIONES = (5, 10, 15, 20)
+
+    @property
+    def auto_delay_segundos(self) -> int:
+        """Segundos de cuenta regresiva (diálogo cancelable) antes de que el bot tome
+        el control del mouse/teclado. Acotado a AUTO_DELAY_OPCIONES; default 5."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        val = cfg.getint("AUTO", "delay_segundos", fallback=5)
+        return val if val in self.AUTO_DELAY_OPCIONES else 5
+
+    def save_auto_delay_segundos(self, segundos: int) -> None:
+        try:
+            segundos = int(segundos)
+        except Exception:
+            segundos = 5
+        if segundos not in self.AUTO_DELAY_OPCIONES:
+            segundos = 5
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"]["delay_segundos"] = str(segundos)
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    def auto_especiales(self) -> list:
+        """Secciones con maqueta especial (calibración propia). Lista normalizada."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        raw = cfg.get("AUTO", "especiales", fallback="")
+        return [s.strip().lower() for s in raw.split(",") if s.strip()]
+
+    def save_auto_especiales(self, secciones: list) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        limpio = sorted({(s or "").strip().lower() for s in secciones if (s or "").strip()})
+        cfg["AUTO"]["especiales"] = ",".join(limpio)
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    def auto_excluidas(self) -> list:
+        """Secciones que el Armado automático NO arma (las saltea). Lista normalizada."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        raw = cfg.get("AUTO", "excluidas", fallback="")
+        return [s.strip().lower() for s in raw.split(",") if s.strip()]
+
+    def save_auto_excluidas(self, secciones: list) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        limpio = sorted({(s or "").strip().lower() for s in secciones if (s or "").strip()})
+        cfg["AUTO"]["excluidas"] = ",".join(limpio)
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    @property
+    def perfil_colores(self) -> str:
+        """Perfil de colores de estado de la grilla: 'armado' | 'maquetacion' | 'editor'."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        val = cfg.get("UI", "perfil_colores", fallback="editor").strip().lower()
+        return val if val in ("armado", "maquetacion", "editor") else "editor"
+
+    def save_perfil_colores(self, valor: str) -> None:
+        valor = (valor or "editor").strip().lower()
+        if valor not in ("armado", "maquetacion", "editor"):
+            valor = "editor"
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "UI" not in cfg:
+            cfg["UI"] = {}
+        cfg["UI"]["perfil_colores"] = valor
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    def auto_area(self, clave: str):
+        """(x, y, w, h) calibrada de un recurso del Armado automático, o None.
+        Se guarda como {clave}_x/_y/_w/_h en [AUTO]."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        try:
+            return (cfg.getint("AUTO", f"{clave}_x"),
+                    cfg.getint("AUTO", f"{clave}_y"),
+                    cfg.getint("AUTO", f"{clave}_w"),
+                    cfg.getint("AUTO", f"{clave}_h"))
+        except Exception:
+            return None
+
+    def save_auto_area(self, clave: str, x: int, y: int, w: int, h: int) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"][f"{clave}_x"] = str(int(x))
+        cfg["AUTO"][f"{clave}_y"] = str(int(y))
+        cfg["AUTO"][f"{clave}_w"] = str(int(w))
+        cfg["AUTO"][f"{clave}_h"] = str(int(h))
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    def auto_centro(self, clave: str):
+        """Centro (x, y) del área calibrada `clave`, o None. Útil para clics."""
+        a = self.auto_area(clave)
+        if not a:
+            return None
+        x, y, w, h = a
+        return (int(x + w / 2), int(y + h / 2))
+
+    def auto_grab_offset(self, clave: str):
+        """Offset aprendido (dx, dy, n_muestras) del punto de agarre del clon para el
+        recurso `clave` (autocalibración B↔C). None si aún no se aprendió nada.
+        Se guarda como {clave}_grab_dx/_grab_dy/_grab_n en [AUTO]."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        try:
+            return (cfg.getint("AUTO", f"{clave}_grab_dx"),
+                    cfg.getint("AUTO", f"{clave}_grab_dy"),
+                    cfg.getint("AUTO", f"{clave}_grab_n", fallback=1))
+        except Exception:
+            return None
+
+    def auto_grab_conv(self, clave: str) -> int:
+        """Muestras BUENAS consecutivas (|B-C| ≤ tol) del agarre `clave`. El módulo de
+        calibración lo compara con un umbral para decidir 'convergido'."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        return cfg.getint("AUTO", f"{clave}_grab_conv", fallback=0)
+
+    def save_auto_grab_offset(self, clave: str, dx: int, dy: int,
+                              n: int = 1, conv: int = None) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"][f"{clave}_grab_dx"] = str(int(round(dx)))
+        cfg["AUTO"][f"{clave}_grab_dy"] = str(int(round(dy)))
+        cfg["AUTO"][f"{clave}_grab_n"] = str(int(max(1, n)))
+        if conv is not None:
+            cfg["AUTO"][f"{clave}_grab_conv"] = str(int(max(0, conv)))
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
     def save_maqueta_config(self, data: dict):
         cfg = configparser.ConfigParser()
         cfg.read(self.CONFIG_FILE, encoding="utf-8")
