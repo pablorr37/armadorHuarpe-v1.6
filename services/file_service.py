@@ -269,6 +269,7 @@ DEFAULT_PAGE_FIELDS = {
     "tapa_foto": "false",
     "tapa_titulo": "false",
     "listo_para_armar": "false",
+    "armado_bot": "false",
     "editando": "false",
     "editando_por": "",
     "mono_extra": "",
@@ -1449,6 +1450,7 @@ class FileService:
             "tapa_foto": cfg[sec].getboolean("tapa_foto", fallback=False),
             "tapa_titulo": cfg[sec].getboolean("tapa_titulo", fallback=False),
             "listo_para_armar": cfg[sec].getboolean("listo_para_armar", fallback=False),
+            "armado_bot": cfg[sec].getboolean("armado_bot", fallback=False),
             "editando": cfg[sec].getboolean("editando", fallback=False),
             "editando_por": cfg[sec].get("editando_por", "").strip(),
             "mono_extra": cfg[sec].get("mono_extra", "").strip(),
@@ -1564,6 +1566,7 @@ class FileService:
             "tapa_foto": mapping.get("tapa_foto", "false").lower() == "true",
             "tapa_titulo": mapping.get("tapa_titulo", "false").lower() == "true",
             "listo_para_armar": mapping.get("listo_para_armar", "false").lower() == "true",
+            "armado_bot": mapping.get("armado_bot", "false").lower() == "true",
             "mono_extra": mapping.get("mono_extra", ""),
             "by": mapping.get("by", ""),
             "ts": mapping.get("ts", ""),
@@ -1681,8 +1684,9 @@ class FileService:
             txt_name=txt_name,
             aviso_full=False if apagar_aviso_full else entry.get("aviso_full"),
             estado="proceso",
-            # Asignar (user o bot) resetea 'listo para armar': el contenido cambió/reasignó.
+            # Asignar (user o bot) resetea 'listo para armar' y 'armado bot': el contenido cambió/reasignó.
             listo_para_armar="false",
+            armado_bot="false",
             by=(by or entry.get("by") or "")
         )
         # Copiar maqueta según aviso/sección

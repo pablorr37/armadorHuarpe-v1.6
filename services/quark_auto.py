@@ -574,12 +574,12 @@ class QuarkAutomator:
                            (int(pos[0]) + dx, int(pos[1]) + dy), duracion=duracion)
         return True
 
-    def clonar_y_arrastrar(self, p_src, p_dst, duracion: float = 0.6, leer_pos_fn=None,
-                           offset_agarre=None):
+    def clonar_y_arrastrar(self, p_src, p_dst, p_grab=None, duracion: float = 0.6,
+                           leer_pos_fn=None):
         """Selecciona la caja de origen, la clona (Ctrl+D) y arrastra el clon al destino.
-        `offset_agarre` (dx, dy) es el desplazamiento del punto de agarre respecto del centro
-        del original (autocalibrado B↔C); si es None se usa el fijo CLON_OFFSET. Si se pasa
-        `leer_pos_fn`, afina la posición con corrección iterativa (P6b)."""
+        `p_grab` (x, y) es el punto donde queda el clon (calibrado: origen del clon B); si es
+        None se cae al viejo `p_src + CLON_OFFSET`. Si se pasa `leer_pos_fn`, afina la posición
+        con corrección iterativa (P6b)."""
         if not p_src or not p_dst:
             return False
         if not self.asegurar_foco():
@@ -588,11 +588,12 @@ class QuarkAutomator:
         self.click(int(p_src[0]), int(p_src[1]))   # seleccionar la caja original
         self.esperar(0.2 * FACTOR_POST_PEGADO)
         self.clonar()
-        # Tras Ctrl+D el clon queda desplazado abajo-derecha: para agarrarlo, arrancar el
-        # arrastre corrido en ese sentido respecto del centro del original.
-        off_x, off_y = offset_agarre if offset_agarre else (CLON_OFFSET_X, CLON_OFFSET_Y)
-        p_grab = (int(p_src[0]) + int(off_x), int(p_src[1]) + int(off_y))
-        return self.arrastrar_con_correccion(p_grab, p_dst, leer_pos_fn=leer_pos_fn,
+        # Punto de agarre del clon: el calibrado (B) o, si falta, el fijo respecto del original.
+        if p_grab:
+            pg = (int(p_grab[0]), int(p_grab[1]))
+        else:
+            pg = (int(p_src[0]) + CLON_OFFSET_X, int(p_src[1]) + CLON_OFFSET_Y)
+        return self.arrastrar_con_correccion(pg, p_dst, leer_pos_fn=leer_pos_fn,
                                              duracion=duracion)
 
     def ensanchar_caja(self, p_edge, p_rlimit, duracion: float = 0.6):

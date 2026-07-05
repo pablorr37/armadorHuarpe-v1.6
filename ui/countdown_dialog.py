@@ -20,6 +20,9 @@ class CountdownDialog(QDialog):
         self._restante = max(1, int(segundos))
         self.setWindowTitle("Armado automático")
         self.setModal(True)
+        # Siempre al frente: si Quark (u otra ventana) intenta robar el foco durante la
+        # cuenta, el aviso debe seguir visible por encima.
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setMinimumWidth(360)
 
         lay = QVBoxLayout(self)
@@ -47,6 +50,12 @@ class CountdownDialog(QDialog):
         self._timer.timeout.connect(self._tick)
         self._actualizar_texto()
         self._timer.start()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # Traer al frente de forma explícita al mostrarse.
+        self.raise_()
+        self.activateWindow()
 
     def _actualizar_texto(self):
         self._label.setText(

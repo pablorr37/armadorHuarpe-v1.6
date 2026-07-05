@@ -1202,6 +1202,7 @@ class ArmadorController:
             pag.tapa_foto = bool(entry.get("tapa_foto", False))
             pag.tapa_titulo = bool(entry.get("tapa_titulo", False))
             pag.listo_para_armar = bool(entry.get("listo_para_armar", False))
+            pag.armado_bot = bool(entry.get("armado_bot", False))
             pag.editando = bool(entry.get("editando", False))
             pag.editando_por = (entry.get("editando_por") or "").strip()
             _me_ed = (self.usuario or "").strip().lower()
@@ -1544,12 +1545,19 @@ class ArmadorController:
             # --- Leer INI una vez para esta página ---
             entry = self.file_service.read_page_entry(i)
 
-            # qxp detectado en base → ya no está "listo para armar". Se mira el INI
-            # (no el flag en memoria, que puede quedar desincronizado).
+            # qxp detectado en base → ya no está "listo para armar" ni "armado bot". Se mira el
+            # INI (no el flag en memoria, que puede quedar desincronizado).
             if cambios["armado"] and str(entry.get("listo_para_armar", "")).strip().lower() == "true":
                 pag.listo_para_armar = False
                 try:
                     self.file_service.write_page_entry(i, listo_para_armar="false")
+                except Exception:
+                    pass
+                hubo_cambio = True
+            if cambios["armado"] and str(entry.get("armado_bot", "")).strip().lower() == "true":
+                pag.armado_bot = False
+                try:
+                    self.file_service.write_page_entry(i, armado_bot="false")
                 except Exception:
                     pass
                 hubo_cambio = True

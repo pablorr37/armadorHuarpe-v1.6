@@ -54,20 +54,31 @@ PASOS_CALIBRACION = [
     {"clave": "epigrafe_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "epigrafe",
      "desc": "el EPÍGRAFE en el cuerpo — plantilla {i}"},
 
-    # f) Recursos movibles: clonar (Ctrl+D) + arrastrar, por plantilla
+    # f) Recursos movibles: clonar (Ctrl+D) + arrastrar, por plantilla.
+    #    Tras marcar el `src`, el calibrador clona el recurso en Quark; el usuario marca en
+    #    `clon` DÓNDE quedó el clon (punto de agarre B). En cada `dst_i` el calibrador arrastra
+    #    ese clon al destino para verificar (y deshace con Ctrl+Z). En ejecución se agarra en B.
     {"clave": "textual_src", "tipo": "area", "recurso": "textual", "desc": "la caja de TEXTUAL"},
+    {"clave": "textual_clon", "tipo": "area", "recurso": "textual",
+     "desc": "el CLON del TEXTUAL (se acaba de duplicar): marcá dónde quedó"},
     {"clave": "textual_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "textual",
      "desc": "destino del TEXTUAL — plantilla {i}"},
 
     {"clave": "dato_src", "tipo": "area", "recurso": "dato", "desc": "la caja de DATO"},
+    {"clave": "dato_clon", "tipo": "area", "recurso": "dato",
+     "desc": "el CLON del DATO (se acaba de duplicar): marcá dónde quedó"},
     {"clave": "dato_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "dato",
      "desc": "destino del DATO — plantilla {i}"},
 
     {"clave": "numero_src", "tipo": "area", "recurso": "numero", "desc": "la caja de NÚMERO"},
+    {"clave": "numero_clon", "tipo": "area", "recurso": "numero",
+     "desc": "el CLON del NÚMERO (se acaba de duplicar): marcá dónde quedó"},
     {"clave": "numero_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "numero",
      "desc": "destino del NÚMERO — plantilla {i}"},
 
     {"clave": "qr_src", "tipo": "area", "recurso": "qr", "desc": "la caja de QR"},
+    {"clave": "qr_clon", "tipo": "area", "recurso": "qr",
+     "desc": "el CLON del QR (se acaba de duplicar): marcá dónde quedó"},
     {"clave": "qr_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "qr",
      "desc": "destino del QR — plantilla {i}"},
 
@@ -84,6 +95,37 @@ PASOS_CALIBRACION = [
 
 # Recursos movibles (clonar + arrastrar). Firma/epígrafe NO (son reemplazos).
 RECURSOS_MOVIBLES = ["textual", "dato", "numero", "qr"]
+
+# Tipos de aviso (para calibrar una maqueta distinta por sección + aviso). El valor coincide
+# con composicion_pagina()['aviso_tipo']; "" = sin aviso. El label es para la UI del calibrador.
+AVISO_TIPOS = [
+    ("", "Sin aviso"),
+    ("full", "Completa"),
+    ("half", "Media"),
+    ("footer", "Pie de página"),
+    ("robapagina", "Robapágina"),
+]
+
+
+def token_aviso(aviso_tipo) -> str:
+    """Token estable del tipo de aviso para las claves de calibración. '' → 'sinaviso'."""
+    return (aviso_tipo or "").strip().lower() or "sinaviso"
+
+
+def claves_cascada(seccion, aviso_tipo, clave):
+    """Claves de la más específica a la más general, para buscar calibración con fallback:
+    '{sec}__{aviso}__{clave}' → '{aviso}__{clave}' → '{clave}'.
+    - '{sec}__{aviso}__…': override puntual de una sección con ese aviso.
+    - '{aviso}__…': universal para ese aviso (cualquier sección).
+    - '{clave}': universal general (fallback último)."""
+    sec = normalizar_seccion(seccion) if seccion else ""
+    av = token_aviso(aviso_tipo)
+    out = []
+    if sec:
+        out.append(f"{sec}__{av}__{clave}")
+    out.append(f"{av}__{clave}")
+    out.append(clave)
+    return out
 
 
 def pasos_expandidos():

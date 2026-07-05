@@ -353,40 +353,6 @@ class Config:
         x, y, w, h = a
         return (int(x + w / 2), int(y + h / 2))
 
-    def auto_grab_offset(self, clave: str):
-        """Offset aprendido (dx, dy, n_muestras) del punto de agarre del clon para el
-        recurso `clave` (autocalibración B↔C). None si aún no se aprendió nada.
-        Se guarda como {clave}_grab_dx/_grab_dy/_grab_n en [AUTO]."""
-        cfg = configparser.ConfigParser()
-        cfg.read(self.CONFIG_FILE, encoding="utf-8")
-        try:
-            return (cfg.getint("AUTO", f"{clave}_grab_dx"),
-                    cfg.getint("AUTO", f"{clave}_grab_dy"),
-                    cfg.getint("AUTO", f"{clave}_grab_n", fallback=1))
-        except Exception:
-            return None
-
-    def auto_grab_conv(self, clave: str) -> int:
-        """Muestras BUENAS consecutivas (|B-C| ≤ tol) del agarre `clave`. El módulo de
-        calibración lo compara con un umbral para decidir 'convergido'."""
-        cfg = configparser.ConfigParser()
-        cfg.read(self.CONFIG_FILE, encoding="utf-8")
-        return cfg.getint("AUTO", f"{clave}_grab_conv", fallback=0)
-
-    def save_auto_grab_offset(self, clave: str, dx: int, dy: int,
-                              n: int = 1, conv: int = None) -> None:
-        cfg = configparser.ConfigParser()
-        cfg.read(self.CONFIG_FILE, encoding="utf-8")
-        if "AUTO" not in cfg:
-            cfg["AUTO"] = {}
-        cfg["AUTO"][f"{clave}_grab_dx"] = str(int(round(dx)))
-        cfg["AUTO"][f"{clave}_grab_dy"] = str(int(round(dy)))
-        cfg["AUTO"][f"{clave}_grab_n"] = str(int(max(1, n)))
-        if conv is not None:
-            cfg["AUTO"][f"{clave}_grab_conv"] = str(int(max(0, conv)))
-        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
-            cfg.write(f)
-
     def save_maqueta_config(self, data: dict):
         cfg = configparser.ConfigParser()
         cfg.read(self.CONFIG_FILE, encoding="utf-8")

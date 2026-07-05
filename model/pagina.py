@@ -22,6 +22,7 @@ class Pagina:
     tapa_foto: bool = False
     tapa_titulo: bool = False
     listo_para_armar: bool = False
+    armado_bot: bool = False
     editando: bool = False
     editando_por: str = ""
     editando_por_otro: bool = False

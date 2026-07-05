@@ -79,6 +79,7 @@ class PageButton(QPushButton):
     foto_icon = None
     titulo_icon = None
     activo_icon = None
+    robot_icon = None
     editando_icon = None
     ajustes_icon = None
     avisos_ocultos = False   # toggle global: ocultar las previews de aviso en la grilla
@@ -89,6 +90,7 @@ class PageButton(QPushButton):
         self.tapa_foto = False
         self.tapa_titulo = False
         self.listo_para_armar = False
+        self.armado_bot = False
         self.editando = False
         self.setAcceptDrops(True)
         self._drop_hover = False
@@ -116,6 +118,8 @@ class PageButton(QPushButton):
             PageButton.titulo_icon = QPixmap(resource_path("ui/assets/titulo_tapa.png"))
         if PageButton.activo_icon is None:
             PageButton.activo_icon = QPixmap(resource_path("ui/assets/activo.png"))
+        if PageButton.robot_icon is None:
+            PageButton.robot_icon = QPixmap(resource_path("ui/assets/robot.png"))
         if PageButton.editando_icon is None:
             PageButton.editando_icon = QPixmap(resource_path("ui/assets/editar.png"))
         if PageButton.ajustes_icon is None:
@@ -285,6 +289,11 @@ class PageButton(QPushButton):
             self.listo_para_armar = listo
             QTimer.singleShot(0, self.update)
 
+    def set_bot_flag(self, v: bool):
+        if self.armado_bot != v:
+            self.armado_bot = v
+            QTimer.singleShot(0, self.update)
+
     def set_editando_flag(self, v: bool):
         if self.editando != v:
             self.editando = v
@@ -444,13 +453,18 @@ class PageButton(QPushButton):
         if self.tapa_titulo and PageButton.titulo_icon and not PageButton.titulo_icon.isNull():
             ty = y - size - 2 if self.tapa_foto else y
             painter.drawPixmap(x, ty, size, size, PageButton.titulo_icon)
-        # "Listo para armar" → esquina superior derecha. Si además se está editando,
-        # el ícono "editando" se apila debajo para que no se superpongan.
+        # Esquina superior derecha: "armado automático" (robot) tiene prioridad sobre "listo
+        # para armar" (activo). Si además se está editando, el ícono se apila debajo.
         tr_x = self.width() - size - margin
-        if self.listo_para_armar and PageButton.activo_icon and not PageButton.activo_icon.isNull():
-            painter.drawPixmap(tr_x, margin, size, size, PageButton.activo_icon)
+        top_icon = None
+        if self.armado_bot and PageButton.robot_icon and not PageButton.robot_icon.isNull():
+            top_icon = PageButton.robot_icon
+        elif self.listo_para_armar and PageButton.activo_icon and not PageButton.activo_icon.isNull():
+            top_icon = PageButton.activo_icon
+        if top_icon is not None:
+            painter.drawPixmap(tr_x, margin, size, size, top_icon)
         if self.editando and PageButton.editando_icon and not PageButton.editando_icon.isNull():
-            ey = margin + size + 2 if self.listo_para_armar else margin
+            ey = margin + size + 2 if top_icon is not None else margin
             painter.drawPixmap(tr_x, ey, size, size, PageButton.editando_icon)
 
         # Ícono de ajustes (esquina inferior izquierda)
@@ -1120,9 +1134,6 @@ class MainWindow(QMainWindow):
         act_calibrar_auto = QAction("Calibrar", self)
         act_calibrar_auto.triggered.connect(self._on_calibrar_auto)
         menu_auto.addAction(act_calibrar_auto)
-        act_calibrar_agarre = QAction("Calibrar agarre (maqueta de prueba)", self)
-        act_calibrar_agarre.triggered.connect(self._on_calibrar_agarre)
-        menu_auto.addAction(act_calibrar_agarre)
 
         # Submenú Configuración → Tiempo de espera antes de lanzar el armado automático.
         menu_auto.addSeparator()
@@ -2159,6 +2170,7 @@ class MainWindow(QMainWindow):
         win = EditorNotaWindow(numero, noticia_index, self.controller, mq_cfg, parent=self)
         win.nota_guardada.connect(self._on_nota_editada)
         win.nota_guardada_para_armar.connect(self._on_nota_guardada_para_armar)
+        win.nota_guardada_para_armado_bot.connect(self._on_nota_guardada_para_armado_bot)
         # Publicar los límites de maqueta editados al config.json compartido.
         if getattr(self, "_chrome_watcher", None) is not None:
             win.maqueta_limits_guardados.connect(self._chrome_watcher.publicar_maqueta_limits)
@@ -2238,18 +2250,55 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e))
 
+    def _accion_descartar_armado_bot(self, numero: int):
+        try:
+            self.controller.file_service.write_page_entry(numero, armado_bot="false")
+            pag = self.controller.gestor_paginas.obtener_pagina(numero)
+            if pag:
+                pag.armado_bot = False
+            boton = self.boton_paginas.get(numero)
+            if isinstance(boton, PageButton):
+                boton.set_bot_flag(False)
+            self.statusBar().showMessage(f"Página {numero}: descartado para armado automático", 3000)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+
     def _on_nota_guardada_para_armar(self, numero: int):
+        # Trabajo MANUAL: listo_para_armar=true; excluye 'armado automático'.
         self._on_nota_editada(numero)
         pag = self.controller.gestor_paginas.obtener_pagina(numero)
         if pag:
             pag.listo_para_armar = True
+            pag.armado_bot = False
         try:
-            self.controller.file_service.write_page_entry(numero, listo_para_armar="true")
+            self.controller.file_service.write_page_entry(
+                numero, listo_para_armar="true", armado_bot="false")
         except Exception:
             pass
         boton = self.boton_paginas.get(numero)
         if isinstance(boton, PageButton):
             boton.set_listo_flag(True)
+            boton.set_bot_flag(False)
+
+    def _on_nota_guardada_para_armado_bot(self, numero: int):
+        # Trabajo AUTOMÁTICO: armado_bot=true; excluye el 'listo para armar' manual.
+        self._on_nota_editada(numero)
+        pag = self.controller.gestor_paginas.obtener_pagina(numero)
+        if pag:
+            pag.armado_bot = True
+            pag.listo_para_armar = False
+        try:
+            self.controller.file_service.write_page_entry(
+                numero, armado_bot="true", listo_para_armar="false")
+        except Exception:
+            pass
+        boton = self.boton_paginas.get(numero)
+        if isinstance(boton, PageButton):
+            boton.set_bot_flag(True)
+            boton.set_listo_flag(False)
+        # Permitir que el bot la re-arme aunque ya la haya armado antes en esta sesión.
+        if getattr(self, "auto_orq", None) is not None:
+            self.auto_orq.reset_pagina(numero)
 
     # === Menú contextual (botón derecho) ===
 
@@ -2602,7 +2651,8 @@ class MainWindow(QMainWindow):
 
 
         # --- Descartar para armar (solo cuando el flag está activo) ---
-        if getattr(pag, "listo_para_armar", False) or getattr(pag, "editando", False):
+        if (getattr(pag, "listo_para_armar", False) or getattr(pag, "armado_bot", False)
+                or getattr(pag, "editando", False)):
             menu.addSeparator()
         if getattr(pag, "listo_para_armar", False):
             act_descartar_armar = QAction("Descartar para armar", self)
@@ -2610,6 +2660,12 @@ class MainWindow(QMainWindow):
                 lambda: self._accion_descartar_para_armar(numero)
             )
             menu.addAction(act_descartar_armar)
+        if getattr(pag, "armado_bot", False):
+            act_descartar_bot = QAction("Descartar armado automático", self)
+            act_descartar_bot.triggered.connect(
+                lambda: self._accion_descartar_armado_bot(numero)
+            )
+            menu.addAction(act_descartar_bot)
         if getattr(pag, "editando", False):
             act_descartar_edit = QAction("Descartar notificación de edición", self)
             act_descartar_edit.triggered.connect(
@@ -3139,15 +3195,18 @@ class MainWindow(QMainWindow):
 
         try:
             fs.eliminar_txt_asignado(numero, idx)
-            fs.write_page_entry(numero, assigned=False, listo_para_armar="false", by="")
+            fs.write_page_entry(numero, assigned=False, listo_para_armar="false",
+                                armado_bot="false", by="")
             pag2 = self.controller.gestor_paginas.obtener_pagina(numero)
             if pag2:
                 pag2.asignado = False
                 pag2.asignada_por_ini = False
                 pag2.listo_para_armar = False
+                pag2.armado_bot = False
             boton = self.boton_paginas.get(numero)
             if isinstance(boton, PageButton):
                 boton.set_listo_flag(False)
+                boton.set_bot_flag(False)
             self._despues_de_cambio_estado(numero)
             self.actualizar_info_pagina(pag2)
         except Exception as e:
@@ -3168,15 +3227,18 @@ class MainWindow(QMainWindow):
             return
         try:
             fs.limpiar_notas(numero, by="")
-            fs.write_page_entry(numero, assigned=False, listo_para_armar="false", by="")
+            fs.write_page_entry(numero, assigned=False, listo_para_armar="false",
+                                armado_bot="false", by="")
             pag2 = self.controller.gestor_paginas.obtener_pagina(numero)
             if pag2:
                 pag2.asignado = False
                 pag2.asignada_por_ini = False
                 pag2.listo_para_armar = False
+                pag2.armado_bot = False
             boton = self.boton_paginas.get(numero)
             if isinstance(boton, PageButton):
                 boton.set_listo_flag(False)
+                boton.set_bot_flag(False)
             self._despues_de_cambio_estado(numero)
             self.actualizar_info_pagina(pag2)
         except Exception as e:
@@ -3977,11 +4039,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             _log.warning("No se pudo actualizar paginas_secciones (extensión): %s", e)
 
-    def _registrar_trabajo(self, numero: int, accion: str):
-        """#1 — registra una acción del usuario en el historial de la página."""
+    def _registrar_trabajo(self, numero: int, accion: str, usuario: str = None):
+        """#1 — registra una acción en el historial de la página. Por defecto la atribuye al
+        usuario de la estación; si se pasa `usuario` (p. ej. 'bot'), registra ese actor."""
         try:
-            import getpass
-            usuario = (getattr(self.controller, "usuario", "") or getpass.getuser() or "?").strip()
+            if usuario is None:
+                import getpass
+                usuario = (getattr(self.controller, "usuario", "") or getpass.getuser() or "?").strip()
             self.controller.file_service.registrar_trabajo(numero, usuario, accion)
         except Exception as e:
             _log.warning("No se pudo registrar trabajo P%02d (%s): %s", numero, accion, e)
@@ -5243,7 +5307,7 @@ class MainWindow(QMainWindow):
             if getattr(self, "auto_orq", None) is not None and self.auto_orq.enabled:
                 gp = self.controller.gestor_paginas
                 listas = [n for n in range(1, 17)
-                          if getattr(gp.obtener_pagina(n), "listo_para_armar", False)]
+                          if getattr(gp.obtener_pagina(n), "armado_bot", False)]
                 self.auto_orq.notificar_listas(listas)
         except Exception as e:
             _log.warning("[WARN] Modo automático notificar_listas: %s", e)
@@ -5356,60 +5420,29 @@ class MainWindow(QMainWindow):
 
         lanzar_calibrador(parent=self, on_finish=_fin)
 
-    def _on_calibrar_agarre(self):
-        """Corre la pasada de autocalibración del punto de agarre (B↔C) sobre la maqueta
-        abierta en Quark. Mueve el mouse: pedir confirmación antes."""
-        try:
-            from ui.calibrador_agarre import lanzar_calibrador_agarre
-        except Exception as e:
-            QMessageBox.warning(self, "Calibrar agarre",
-                                f"No se pudo abrir el calibrador de agarre:\n{e}")
-            return
-        r = QMessageBox.question(
-            self, "Calibrar agarre (maqueta de prueba)",
-            "Se calibrará DESDE DÓNDE agarra el bot cada recurso, comparando dónde termina "
-            "(B) contra dónde debería (C).\n\n"
-            "Requisitos:\n"
-            "• Tené la maqueta de prueba abierta y maximizada en Quark, al mismo zoom que la "
-            "calibración de áreas.\n"
-            "• Los recursos (origen y destino) ya deben estar calibrados.\n\n"
-            "El bot tomará el control del mouse: clona un recurso, lo arrastra, verifica la "
-            "posición (podés afinar arrastrando la imagen) y DESHACE el cambio. Mové el mouse "
-            "a una esquina para abortar.\n\n¿Continuar?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if r != QMessageBox.Yes:
-            return
-        try:
-            ajustados = lanzar_calibrador_agarre(parent=self)
-        except Exception as e:
-            _log.warning("Calibrar agarre falló: %s", e)
-            QMessageBox.warning(self, "Calibrar agarre", f"La calibración falló:\n{e}")
-            return
-        QMessageBox.information(
-            self, "Calibrar agarre",
-            f"Listo. Se ajustó el agarre de {ajustados} recurso(s).")
-
     def _auto_coords(self):
         return (config_global.auto_coord("script"), config_global.auto_coord("play"))
 
-    def _auto_calibracion(self, seccion: str = None) -> dict:
+    def _auto_calibracion(self, seccion: str = None, aviso: str = None) -> dict:
         """Dict {clave -> punto (x,y)} para clics/arrastres del Armado automático.
-        Puntos del palette tal cual; áreas de recursos → su centro. Si la sección es una
-        maqueta especial (calibración propia), lee las claves prefijadas '{seccion}__{clave}'."""
-        from services.armado_auto_schema import pasos_expandidos, normalizar_seccion
-        sec = normalizar_seccion(seccion) if seccion else None
-        especiales = set(config_global.auto_especiales())
-        pref = f"{sec}__" if (sec and sec in especiales) else ""
+        Puntos del palette tal cual (globales); áreas de recursos → su centro, buscando la
+        calibración más específica de la maqueta con fallback:
+        '{sec}__{aviso}__{clave}' → '{sec}__{clave}' → '{clave}'."""
+        from services.armado_auto_schema import pasos_expandidos, claves_cascada
 
         calib: dict = {}
         for paso in pasos_expandidos():
             clave = paso["clave"]
-            k = pref + clave
             if paso["tipo"] == "punto":
-                # script/play no se calibran por sección: usar siempre el global.
+                # script/play no se calibran por maqueta: usar siempre el global.
                 calib[clave] = config_global.auto_coord(clave)
             else:
-                calib[clave] = config_global.auto_centro(k) or config_global.auto_centro(clave)
+                centro = None
+                for k in claves_cascada(seccion, aviso, clave):
+                    centro = config_global.auto_centro(k)
+                    if centro:
+                        break
+                calib[clave] = centro
         return calib
 
     def _auto_finalizado_ok(self, numero: int):
@@ -5420,15 +5453,13 @@ class MainWindow(QMainWindow):
             self.controller.file_service.registrar_trabajo(numero, "bot", "Armado automático")
         except Exception as e:
             _log.warning("Auto P%02d: no se pudo registrar 'Armado automático': %s", numero, e)
-        if self._auto_mover_a_base(numero):
-            try:
-                self.controller.file_service.registrar_trabajo(numero, "bot", "En Base automático")
-            except Exception as e:
-                _log.warning("Auto P%02d: no se pudo registrar 'En Base automático': %s", numero, e)
+        # El movimiento a Base lo registra _auto_mover_a_base como 'bot' (una sola vez).
+        self._auto_mover_a_base(numero, actor="bot")
         self._traer_armador_al_frente()
 
-    def _auto_mover_a_base(self, numero: int) -> bool:
+    def _auto_mover_a_base(self, numero: int, actor: str = None) -> bool:
         """Promueve la página armada de materiales/Pnn a Base (mismo camino que el botón manual).
+        `actor` atribuye el registro (None → usuario de la estación; 'bot' → Armado automático).
         Devuelve True si efectivamente la movió a Base."""
         try:
             fs = self.controller.file_service
@@ -5441,7 +5472,7 @@ class MainWindow(QMainWindow):
                 return False
             res = self.controller.ejecutar_mover(src, dest)
             if res is True:
-                self._registrar_trabajo(numero, label.replace("\n", " "))
+                self._registrar_trabajo(numero, label.replace("\n", " "), usuario=actor)
                 self.colorear_paginas()
                 _log.info("Auto P%02d: movida a Base.", numero)
                 return True
@@ -5659,6 +5690,7 @@ class MainWindow(QMainWindow):
                 getattr(pagina, "tapa_titulo", False)
             )
             boton.set_listo_flag(getattr(pagina, "listo_para_armar", False))
+            boton.set_bot_flag(getattr(pagina, "armado_bot", False))
             boton.set_editando_flag(getattr(pagina, "editando", False))
 
         boton.setText("\n".join(lines))

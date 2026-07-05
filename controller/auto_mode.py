@@ -104,7 +104,7 @@ class _PaginaWorker(QThread):
 
     def __init__(self, numero, automator: QuarkAutomator, coord_script, coord_play,
                  comp: dict, calib: dict, espera_apertura: float, espera_pegado: float,
-                 grab_pref: str = "", parent=None):
+                 parent=None):
         super().__init__(parent)
         self.numero = int(numero)
         self.automator = automator
@@ -114,8 +114,6 @@ class _PaginaWorker(QThread):
         self.calib = calib or {}
         self.espera_apertura = espera_apertura
         self.espera_pegado = espera_pegado
-        # Prefijo de sección para las claves de offset de agarre (autocalibración B↔C).
-        self.grab_pref = grab_pref or ""
 
     def run(self):
         a = self.automator
@@ -203,33 +201,12 @@ class _PaginaWorker(QThread):
         src = self.calib.get(clave_src)
         if not src:
             return
-        # Offset de agarre aprendido (autocalibración B↔C). Si el recurso ya convergió o
-        # no hay plantilla, no se re-mide durante el pegado real (memoria/aprendizaje).
-        off_key = f"{self.grab_pref}{rec}"
-        offset = None
-        medir = False
-        tpl = None
-        cv = None
-        try:
-            import services.calib_visual as cv
-            offset = cv.offset_agarre(off_key)
-            medir = (not a.simular) and (not cv.convergido(off_key))
-            tpl = cv.cargar_template(off_key) if medir else None
-        except Exception as e:
-            _log.debug("calib_visual no disponible (%s): uso offset fijo.", e)
+        # Punto de agarre del clon (B) calibrado; si falta, clonar_y_arrastrar usa el fijo.
+        grab = self.calib.get(f"{rec}_clon")
         for i in range(1, PLANTILLAS + 1):
             dst = self.calib.get(f"{base_dst}_{i}")
-            if not dst:
-                continue
-            a.clonar_y_arrastrar(src, dst, offset_agarre=offset)
-            # Medir dónde quedó (B) vs dónde debía (C=dst) y refinar el agarre. No mueve nada.
-            if medir and tpl is not None:
-                try:
-                    b = cv.localizar(tpl, centro_esperado=dst)
-                    if b:
-                        cv.actualizar_agarre(off_key, (b[0], b[1]), dst, offset_usado=offset)
-                except Exception as e:
-                    _log.debug("medición de agarre '%s' falló: %s", off_key, e)
+            if dst:
+                a.clonar_y_arrastrar(src, dst, p_grab=grab)
 
     def _colocar_foto3(self, a):
         src = self.calib.get("foto_src")
@@ -277,7 +254,7 @@ class AutoModeOrchestrator(QObject):
         self._fn_pegar = fn_pegar_y_abrir
         self._fn_coords = fn_coords
         self._fn_comp = fn_comp or (lambda _n: {})
-        self._fn_calibracion = fn_calibracion or (lambda _s=None: {})
+        self._fn_calibracion = fn_calibracion or (lambda _s=None, _a=None: {})
         self._fn_finalizado_ok = fn_finalizado_ok or (lambda _n: None)
         self._fn_confirmar_inicio = fn_confirmar_inicio or (lambda _n: True)
         self._enabled = False
@@ -362,8 +339,17 @@ class AutoModeOrchestrator(QObject):
         _script, play = self._fn_coords()
         return bool(play)
 
+    def reset_pagina(self, numero: int):
+        """Olvida el resultado previo de `numero` para que pueda volver a armarse (p. ej. el
+        usuario la re-marcó para armado automático tras rehacerla). El próximo poll la reencola."""
+        n = int(numero)
+        self._procesadas.discard(n)
+        self._pospuestas.discard(n)
+        self._fallos_foco.discard(n)
+        self._reintentos_foco.pop(n, None)
+
     def notificar_listas(self, numeros):
-        """main_window llama esto tras cada poll con las páginas listo_para_armar."""
+        """main_window llama esto tras cada poll con las páginas marcadas para armado_bot."""
         self._cola = orden_prioridad(numeros)
         # Nuevo poll → dar otra oportunidad a las pospuestas (p.ej. dejó de estar bloqueada).
         self._pospuestas.clear()
@@ -403,6 +389,19 @@ class AutoModeOrchestrator(QObject):
             return
 
         self._activa = numero
+
+        # Aviso con cuenta regresiva cancelable ANTES de asignar/abrir Quark/pegar: así el
+        # diálogo aparece al frente (Quark todavía no abrió) y cancelar no deja Quark abierto.
+        try:
+            confirmado = self._fn_confirmar_inicio(numero)
+        except Exception as e:
+            _log.warning("confirmar_inicio P%02d falló: %s", numero, e)
+            confirmado = True
+        if not confirmado:
+            self.log.emit(f"P{numero:02d}: inicio cancelado por el usuario (se reintentará).")
+            self._finalizar(numero, REINTENTAR)
+            return
+
         self.log.emit(f"P{numero:02d}: asignando…")
         try:
             if not self._fn_asignar(numero):
@@ -419,37 +418,19 @@ class AutoModeOrchestrator(QObject):
 
         coord_script, coord_play = self._fn_coords()
         try:
-            calib = self._fn_calibracion(seccion) or {}
+            # La maqueta depende de la sección y del tipo de aviso (comp['aviso_tipo']).
+            calib = self._fn_calibracion(seccion, comp.get("aviso_tipo")) or {}
         except Exception as e:
             _log.warning("calibración P%02d falló: %s", numero, e)
             calib = {}
-
-        # Aviso con cuenta regresiva cancelable ANTES de que el worker tome el control del
-        # mouse/teclado. La callback (hilo GUI) devuelve False si el usuario cancela.
-        try:
-            confirmado = self._fn_confirmar_inicio(numero)
-        except Exception as e:
-            _log.warning("confirmar_inicio P%02d falló: %s", numero, e)
-            confirmado = True
-        if not confirmado:
-            self.log.emit(f"P{numero:02d}: inicio cancelado por el usuario (se reintentará).")
-            self._finalizar(numero, REINTENTAR)
-            return
 
         # Arrancar el kill-switch (Esc×5) mientras se procesa/pega esta página.
         self._cancel_event.clear()
         self._iniciar_watcher()
 
-        # Prefijo de sección para el offset de agarre (mismas reglas que la calibración por áreas).
-        try:
-            especiales = set(config_global.auto_especiales())
-        except Exception:
-            especiales = set()
-        grab_pref = f"{seccion}__" if (seccion and seccion in especiales) else ""
-
         self._worker = _PaginaWorker(numero, self._automator, coord_script, coord_play,
                                      comp, calib, self.ESPERA_APERTURA, self.ESPERA_PEGADO,
-                                     grab_pref=grab_pref, parent=self)
+                                     parent=self)
         self._worker.paso.connect(self.log.emit)
         self._worker.terminado.connect(self._finalizar)
         self._worker.start()

@@ -695,6 +695,7 @@ class _ToastNotification(QWidget):
 class EditorNotaWindow(QMainWindow):
     nota_guardada = pyqtSignal(int)
     nota_guardada_para_armar = pyqtSignal(int)
+    nota_guardada_para_armado_bot = pyqtSignal(int)   # 'Guardar para armado automático' (flag armado_bot)
     maqueta_limits_guardados = pyqtSignal()   # límites de maqueta editados → publicar a estaciones
 
     def __init__(
@@ -808,9 +809,14 @@ class EditorNotaWindow(QMainWindow):
         self._btn_guardar_armar.setCursor(Qt.PointingHandCursor)
         self._btn_guardar_armar.setProperty("primary", True)
         self._btn_guardar_armar.setProperty("compact", True)
+        self._btn_guardar_bot = QPushButton("Guardar para armado automático")
+        self._btn_guardar_bot.setCursor(Qt.PointingHandCursor)
+        self._btn_guardar_bot.setProperty("primary", True)
+        self._btn_guardar_bot.setProperty("compact", True)
         btn_row.addStretch(1)
         btn_row.addWidget(self._btn_guardar)
         btn_row.addWidget(self._btn_guardar_armar)
+        btn_row.addWidget(self._btn_guardar_bot)
         hdr_lay.addLayout(btn_row)
 
         sep = QFrame()
@@ -1051,6 +1057,7 @@ class EditorNotaWindow(QMainWindow):
         self._btn_reanalizar.clicked.connect(self._on_detect_textuales)
         self._btn_guardar.clicked.connect(self._on_guardar)
         self._btn_guardar_armar.clicked.connect(self._on_guardar_para_armar)
+        self._btn_guardar_bot.clicked.connect(self._on_guardar_para_armado_bot)
         self._cb_maqueta.activated[str].connect(self._on_maqueta_changed)
         self._btn_swap.clicked.connect(self._on_swap)
         self._sb_noticias.valueChanged.connect(self._on_story_count_changed)
@@ -1530,6 +1537,11 @@ class EditorNotaWindow(QMainWindow):
     def _on_guardar_para_armar(self):
         if self._do_save():
             self.nota_guardada_para_armar.emit(self.numero)
+            self.close()
+
+    def _on_guardar_para_armado_bot(self):
+        if self._do_save():
+            self.nota_guardada_para_armado_bot.emit(self.numero)
             self.close()
 
     def _actualizar_nota_json(self, txt_path: Path, panel: "StoryPanel", maqueta: str):
