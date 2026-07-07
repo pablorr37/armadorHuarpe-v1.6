@@ -80,6 +80,7 @@ class PageButton(QPushButton):
     titulo_icon = None
     activo_icon = None
     robot_icon = None
+    error_icon = None
     editando_icon = None
     ajustes_icon = None
     avisos_ocultos = False   # toggle global: ocultar las previews de aviso en la grilla
@@ -91,6 +92,7 @@ class PageButton(QPushButton):
         self.tapa_titulo = False
         self.listo_para_armar = False
         self.armado_bot = False
+        self.error_pegado = False
         self.editando = False
         self.setAcceptDrops(True)
         self._drop_hover = False
@@ -120,6 +122,8 @@ class PageButton(QPushButton):
             PageButton.activo_icon = QPixmap(resource_path("ui/assets/activo.png"))
         if PageButton.robot_icon is None:
             PageButton.robot_icon = QPixmap(resource_path("ui/assets/robot.png"))
+        if PageButton.error_icon is None:
+            PageButton.error_icon = QPixmap(resource_path("ui/assets/error.png"))
         if PageButton.editando_icon is None:
             PageButton.editando_icon = QPixmap(resource_path("ui/assets/editar.png"))
         if PageButton.ajustes_icon is None:
@@ -294,6 +298,11 @@ class PageButton(QPushButton):
             self.armado_bot = v
             QTimer.singleShot(0, self.update)
 
+    def set_error_flag(self, v: bool):
+        if self.error_pegado != v:
+            self.error_pegado = v
+            QTimer.singleShot(0, self.update)
+
     def set_editando_flag(self, v: bool):
         if self.editando != v:
             self.editando = v
@@ -466,6 +475,10 @@ class PageButton(QPushButton):
         if self.editando and PageButton.editando_icon and not PageButton.editando_icon.isNull():
             ey = margin + size + 2 if top_icon is not None else margin
             painter.drawPixmap(tr_x, ey, size, size, PageButton.editando_icon)
+
+        # "Error de pegado" → esquina superior izquierda (error.png).
+        if self.error_pegado and PageButton.error_icon and not PageButton.error_icon.isNull():
+            painter.drawPixmap(margin, margin, size, size, PageButton.error_icon)
 
         # Ícono de ajustes (esquina inferior izquierda)
         self._dibujar_ajustes(painter, size, margin)
@@ -1649,6 +1662,8 @@ class MainWindow(QMainWindow):
             self.auto_orq.estado.connect(lambda m: self.statusBar().showMessage(m, 4000))
             # El auto puede apagarse solo (Esc×5 / fallo de foco) → reflejarlo en el menú.
             self.auto_orq.apagado_auto.connect(self._on_auto_apagado)
+            # Detección del pegado DESCONECTADA (no se usa hoy). La señal/slot quedan disponibles:
+            # self.auto_orq.pegado_fallido.connect(self._on_pegado_fallido)
             # SIEMPRE arrancar con el Armado automático INACTIVO (se activa a mano por sesión).
             config_global.save_auto_mode_enabled(False)
             if getattr(self, "act_auto_on", None) is not None:
@@ -2287,15 +2302,17 @@ class MainWindow(QMainWindow):
         if pag:
             pag.armado_bot = True
             pag.listo_para_armar = False
+            pag.error_pegado = False
         try:
             self.controller.file_service.write_page_entry(
-                numero, armado_bot="true", listo_para_armar="false")
+                numero, armado_bot="true", listo_para_armar="false", error_pegado="false")
         except Exception:
             pass
         boton = self.boton_paginas.get(numero)
         if isinstance(boton, PageButton):
             boton.set_bot_flag(True)
             boton.set_listo_flag(False)
+            boton.set_error_flag(False)
         # Permitir que el bot la re-arme aunque ya la haya armado antes en esta sesión.
         if getattr(self, "auto_orq", None) is not None:
             self.auto_orq.reset_pagina(numero)
@@ -5354,6 +5371,30 @@ class MainWindow(QMainWindow):
             self.act_auto_off.setChecked(True)
         self.statusBar().showMessage(motivo or "Armado automático apagado.", 8000)
 
+    def _on_pegado_fallido(self, numero: int, es_final: bool):
+        """El bot no detectó el cartel 'Pegado finalizado'. Siempre avisa con cuenta regresiva
+        (mismo tiempo que el aviso de inicio). Si es el fallo definitivo (3er intento), marca la
+        página con error de pegado (ícono error.png + registro 'Error de pegado')."""
+        if es_final:
+            try:
+                self.controller.file_service.write_page_entry(numero, error_pegado="true")
+                pag = self.controller.gestor_paginas.obtener_pagina(numero)
+                if pag:
+                    pag.error_pegado = True
+                boton = self.boton_paginas.get(numero)
+                if isinstance(boton, PageButton):
+                    boton.set_error_flag(True)
+                self.controller.file_service.registrar_trabajo(numero, "bot", "Error de pegado")
+            except Exception as e:
+                _log.warning("No se pudo marcar error de pegado P%02d: %s", numero, e)
+        try:
+            from ui.countdown_dialog import CountdownDialog
+            seg = config_global.auto_delay_segundos
+            CountdownDialog(seg, parent=self, titulo="Armado automático",
+                            mensaje="No se detectó el pegado, procedimiento abortado").exec_()
+        except Exception as e:
+            _log.warning("Aviso de pegado no detectado P%s falló: %s", numero, e)
+
     def _set_modo_auto_simular(self, valor: bool):
         config_global.save_auto_mode_simular(bool(valor))
         if getattr(self, "act_auto_simular", None) is not None:
@@ -5428,21 +5469,29 @@ class MainWindow(QMainWindow):
         Puntos del palette tal cual (globales); áreas de recursos → su centro, buscando la
         calibración más específica de la maqueta con fallback:
         '{sec}__{aviso}__{clave}' → '{sec}__{clave}' → '{clave}'."""
-        from services.armado_auto_schema import pasos_expandidos, claves_cascada
+        from services.armado_auto_schema import (
+            pasos_expandidos, claves_cascada, VALORES_DEFAULT, valor_default,
+        )
 
         calib: dict = {}
+        # Puntos/áreas: resolver por cascada sección+aviso → universal.
         for paso in pasos_expandidos():
             clave = paso["clave"]
-            if paso["tipo"] == "punto":
-                # script/play no se calibran por maqueta: usar siempre el global.
-                calib[clave] = config_global.auto_coord(clave)
-            else:
-                centro = None
-                for k in claves_cascada(seccion, aviso, clave):
-                    centro = config_global.auto_centro(k)
-                    if centro:
-                        break
-                calib[clave] = centro
+            resuelto = None
+            for k in claves_cascada(seccion, aviso, clave):
+                resuelto = (config_global.auto_coord(k) if paso["tipo"] == "punto"
+                            else config_global.auto_centro(k))
+                if resuelto:
+                    break
+            calib[clave] = resuelto
+        # Valores numéricos (zoom, X/Y de recursos, A/Al de foto): misma cascada, con default.
+        for clave in VALORES_DEFAULT:
+            val = None
+            for k in claves_cascada(seccion, aviso, clave):
+                val = config_global.auto_valor(k)
+                if val:
+                    break
+            calib[clave] = val or valor_default(clave)
         return calib
 
     def _auto_finalizado_ok(self, numero: int):
@@ -5453,6 +5502,17 @@ class MainWindow(QMainWindow):
             self.controller.file_service.registrar_trabajo(numero, "bot", "Armado automático")
         except Exception as e:
             _log.warning("Auto P%02d: no se pudo registrar 'Armado automático': %s", numero, e)
+        # Se armó OK → limpiar un posible error de pegado previo.
+        try:
+            self.controller.file_service.write_page_entry(numero, error_pegado="false")
+            pag_ok = self.controller.gestor_paginas.obtener_pagina(numero)
+            if pag_ok:
+                pag_ok.error_pegado = False
+            boton_ok = self.boton_paginas.get(numero)
+            if isinstance(boton_ok, PageButton):
+                boton_ok.set_error_flag(False)
+        except Exception:
+            pass
         # El movimiento a Base lo registra _auto_mover_a_base como 'bot' (una sola vez).
         self._auto_mover_a_base(numero, actor="bot")
         self._traer_armador_al_frente()
@@ -5691,6 +5751,7 @@ class MainWindow(QMainWindow):
             )
             boton.set_listo_flag(getattr(pagina, "listo_para_armar", False))
             boton.set_bot_flag(getattr(pagina, "armado_bot", False))
+            boton.set_error_flag(getattr(pagina, "error_pegado", False))
             boton.set_editando_flag(getattr(pagina, "editando", False))
 
         boton.setText("\n".join(lines))

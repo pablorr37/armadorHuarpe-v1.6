@@ -1203,6 +1203,7 @@ class ArmadorController:
             pag.tapa_titulo = bool(entry.get("tapa_titulo", False))
             pag.listo_para_armar = bool(entry.get("listo_para_armar", False))
             pag.armado_bot = bool(entry.get("armado_bot", False))
+            pag.error_pegado = bool(entry.get("error_pegado", False))
             pag.editando = bool(entry.get("editando", False))
             pag.editando_por = (entry.get("editando_por") or "").strip()
             _me_ed = (self.usuario or "").strip().lower()

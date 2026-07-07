@@ -27,6 +27,7 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 from services.quark_auto import QuarkAutomator, CanceladoError
 from services.armado_auto_schema import (
     PLANTILLAS, RECURSOS_MOVIBLES, recurso_activo, ZOOM_ARMADO, normalizar_seccion,
+    foto3_variante, textual_src_key,
 )
 from config.config import config_global
 
@@ -39,6 +40,7 @@ OK = "ok"
 ERROR = "error"
 REINTENTAR = "reintentar"          # bloqueado [315]: reintentar próximo poll
 REINTENTAR_FOCO = "reintentar_foco"  # Quark no llegó al frente: reintentar (hasta 3) próximo poll
+REINTENTAR_PEGADO = "reintentar_pegado"  # no apareció el cartel 'Pegado finalizado': reintentar (3)
 CANCELADO = "cancelado"            # kill-switch Esc×5: abortar y apagar
 
 # Kill-switch: cuántos Esc en cuánto tiempo.
@@ -46,6 +48,7 @@ ESC_N = 5
 ESC_LAPSO = 1.0   # s
 MAX_REINTENTOS_FOCO = 3   # por página
 MAX_PAGINAS_FALLO_FOCO = 2  # si 2 páginas distintas fallan el foco → apagar
+MAX_REINTENTOS_PEGADO = 3   # por página: si no se detecta el pegado 3 veces → error
 
 
 class _EscWatcher(QThread):
@@ -138,9 +141,9 @@ class _PaginaWorker(QThread):
             a.esperar_y_cerrar_dialogo_fuentes(timeout=4.0)
             a.esperar(0.4)
 
-            # Zoom: dejar el documento al zoom con el que se calibró (arrastres d–g).
-            # Si NO se pudo confirmar, se omiten d–g para no mover elementos equivocados.
-            zoom_ok = a.set_zoom(self.calib.get("zoom"), ZOOM_ARMADO)
+            # Zoom: dejar el documento al zoom con el que se calibró (valor editable, default 11).
+            # Si NO se pudo confirmar, se omiten los pasos para no tocar elementos equivocados.
+            zoom_ok = a.set_zoom(self.calib.get("zoom"), self.calib.get("zoom_valor") or ZOOM_ARMADO)
 
             # c) Pegado base con el script dedicado.
             self.paso.emit(f"P{n:02d}: corriendo el pegado…")
@@ -150,6 +153,7 @@ class _PaginaWorker(QThread):
                 return
 
             # El Play es un evento lanzado desde Python: puede disparar el cartel de fuentes.
+            # (La detección del cartel 'Pegado finalizado' quedó DESCONECTADA: no se usa hoy.)
             a.esperar_y_cerrar_dialogo_fuentes(timeout=3.0)
 
             # Guard: sin zoom confirmado, los arrastres calibrados caerían en el lugar
@@ -158,18 +162,13 @@ class _PaginaWorker(QThread):
                 self.paso.emit(f"P{n:02d}: zoom sin confirmar → se omite mover recursos (manual).")
                 _log.warning("P%02d: zoom sin confirmar → se omite mover recursos (manual).", n)
             else:
-                # El bot NO pega firma ni epígrafe: solo corre el script y MUEVE recursos.
-                # f) Recursos movibles: clonar + arrastrar, ×3 plantillas.
-                for rec in RECURSOS_MOVIBLES:
-                    if recurso_activo(self.comp, rec):
-                        self.paso.emit(f"P{n:02d}: colocando {rec}…")
-                        self._clonar_arrastrar(a, f"{rec}_src", f"{rec}_dst", rec)
-
-                # g) Foto a 3 columnas ancha — TEMPORALMENTE DESHABILITADO.
-                #    Para reactivar: descomentar y restaurar los pasos foto* en el schema.
-                # if recurso_activo(self.comp, "foto3"):
-                #     self.paso.emit(f"P{n:02d}: colocando foto a 3 columnas…")
-                #     self._colocar_foto3(a)
+                # El bot NO pega firma ni epígrafe: corre el script, redimensiona la foto y
+                # coloca los recursos por X/Y en el panel.
+                # 1) FOTO a 3 columnas (wide/ancha) PRIMERO: cambiar de plantilla reacomoda la
+                #    vista y perdería la calibración espacial de la foto.
+                self._redimensionar_foto3(a)
+                # 2) Recursos: por cada plantilla (1/2/3), escribir el selector y colocar por X/Y.
+                self._colocar_recursos_xy(a)
 
             self.paso.emit(f"P{n:02d}: guardando y cerrando…")
             a.esperar_y_cerrar_dialogo_fuentes(timeout=1.5)  # limpiar cartel antes de guardar
@@ -197,29 +196,81 @@ class _PaginaWorker(QThread):
             if dst:
                 a.reemplazar_con_atajo(dst)
 
-    def _clonar_arrastrar(self, a, clave_src: str, base_dst: str, rec: str):
-        src = self.calib.get(clave_src)
-        if not src:
+    def _redimensionar_foto3(self, a):
+        """Si la página lleva foto a 3 columnas (wide/ancha): seleccionar cada foto (por plantilla)
+        y escribir A (Ancho) y Al (Alto) en el panel de medidas. Se hace ANTES de tocar el selector
+        de plantilla (que reacomoda la vista)."""
+        var = foto3_variante(self.comp)
+        if not var:
             return
-        # Punto de agarre del clon (B) calibrado; si falta, clonar_y_arrastrar usa el fijo.
-        grab = self.calib.get(f"{rec}_clon")
+        campo_a = self.calib.get("campo_a")
+        campo_al = self.calib.get("campo_al")
+        a_val = self.calib.get("foto_a")
+        al_val = self.calib.get("foto_al_wide" if var == "wide" else "foto_al_ancha")
+        if not (campo_a and campo_al and a_val and al_val):
+            _log.info("Foto3 %s: falta calibración (campos A/Al o valores) → se omite.", var)
+            return
+        self.paso.emit(f"P{self.numero:02d}: redimensionando foto ({var})…")
         for i in range(1, PLANTILLAS + 1):
-            dst = self.calib.get(f"{base_dst}_{i}")
-            if dst:
-                a.clonar_y_arrastrar(src, dst, p_grab=grab)
+            sel = self.calib.get(f"foto_sel_{i}")
+            if sel:
+                a.redimensionar_foto(sel, campo_a, campo_al, a_val, al_val)
 
-    def _colocar_foto3(self, a):
-        src = self.calib.get("foto_src")
-        if not src:
+    def _colocar_recursos_xy(self, a):
+        """Coloca cada recurso activo en las PLANTILLAS mediante la cadena 'carrier' cortar/pegar:
+        el clon viaja de plantilla en plantilla y se posiciona escribiendo X/Y en el panel.
+        Por recurso: plantilla1 → clic src → clonar → X/Y → clonar; luego, por cada plantilla
+        siguiente: cortar → seleccionar plantilla → pegar → X/Y → (clonar salvo la última)."""
+        plantilla_sel = self.calib.get("plantilla_sel")
+        campo_x = self.calib.get("campo_x")
+        campo_y = self.calib.get("campo_y")
+        zoom_area = self.calib.get("zoom")
+        zoom_base = self.calib.get("zoom_valor") or ZOOM_ARMADO
+        zoom_final = self.calib.get("zoom_valor_final") or "60"
+        try:
+            dels_rec = int(str(self.calib.get("deletes_recurso") or "2").strip())
+        except Exception:
+            dels_rec = 2
+        activos = [rec for rec in RECURSOS_MOVIBLES if recurso_activo(self.comp, rec)]
+        if not activos:
             return
-        for i in range(1, PLANTILLAS + 1):
-            dst = self.calib.get(f"foto_dst_{i}")
-            edge = self.calib.get(f"foto_edge_{i}")
-            rlim = self.calib.get(f"foto_rlimit_{i}")
-            if dst:
-                a.clonar_y_arrastrar(src, dst)
-            if edge and rlim:
-                a.ensanchar_caja(edge, rlim)
+        if not (campo_x and campo_y):
+            _log.info("Recursos: faltan campos X/Y calibrados → se omite.")
+            return
+        for rec in activos:
+            # El textual usa el src de su variante (x2 / con_foto / con_foto_xl / simple); el X/Y
+            # es compartido (textual_x/textual_y). Los demás recursos: {rec}_src.
+            src_key = textual_src_key(self.comp) if rec == "textual" else f"{rec}_src"
+            src = self.calib.get(src_key)
+            x_val = self.calib.get(f"{rec}_x")
+            y_val = self.calib.get(f"{rec}_y")
+            if not (src and x_val and y_val):
+                continue
+            self.paso.emit(f"P{self.numero:02d}: colocando {rec} en {PLANTILLAS} plantillas…")
+            for t in range(1, PLANTILLAS + 1):
+                if t == 1:
+                    if plantilla_sel:
+                        a.seleccionar_plantilla(plantilla_sel, 1)
+                    a.click(int(src[0]), int(src[1]))   # seleccionar el recurso (src)
+                    a.esperar(0.2)
+                    a.clonar()                          # clon posicionable en la plantilla 1
+                else:
+                    a.cortar()                          # cortar el carrier del bucle anterior
+                    # Última plantilla (contigua): subir el zoom antes de elegirla, si no Quark
+                    # pega en la plantilla vecina aunque esté seleccionada la correcta.
+                    if t == PLANTILLAS and zoom_area:
+                        a.set_zoom(zoom_area, zoom_final)
+                    if plantilla_sel:
+                        a.seleccionar_plantilla(plantilla_sel, t)
+                    a.pegar()                           # pegar en la plantilla activa
+                # Backspaces (config 'Borrados ⌫', default 2): limpian el '-' residual del src.
+                a.escribir_en_campo(campo_x, x_val, deletes=dels_rec)
+                a.escribir_en_campo(campo_y, y_val, deletes=dels_rec)
+                if t < PLANTILLAS:
+                    a.clonar()                          # carrier para la próxima plantilla
+            # Volver al zoom base: el clic del src del próximo recurso está calibrado a ese zoom.
+            if zoom_area:
+                a.set_zoom(zoom_area, zoom_base)
 
 
 class AutoModeOrchestrator(QObject):
@@ -232,6 +283,7 @@ class AutoModeOrchestrator(QObject):
     log = pyqtSignal(str)
     procesada = pyqtSignal(int, bool)
     apagado_auto = pyqtSignal(str)   # el auto se apagó solo (Esc×5 / fallo de foco): motivo
+    pegado_fallido = pyqtSignal(int, bool)  # (numero, es_final): no se detectó el pegado
 
     ESPERA_APERTURA = 6.0          # s tras abrir Quark antes de enfocar
     ESPERA_PEGADO = 8.0            # s tras Play antes de continuar
@@ -264,6 +316,7 @@ class AutoModeOrchestrator(QObject):
         self._procesadas: set = set()
         self._pospuestas: set = set()   # bloqueadas [315]: reintentar en el próximo poll
         self._reintentos_foco: dict = {}   # numero -> intentos por fallo de foco
+        self._reintentos_pegado: dict = {}  # numero -> intentos por pegado no detectado
         self._fallos_foco: set = set()     # páginas que agotaron los reintentos de foco
         self._activa = None
         self._worker = None
@@ -282,6 +335,7 @@ class AutoModeOrchestrator(QObject):
             self._procesadas.clear()
             self._pospuestas.clear()
             self._reintentos_foco.clear()
+            self._reintentos_pegado.clear()
             self._fallos_foco.clear()
             self._detener_watcher()
         else:
@@ -347,6 +401,7 @@ class AutoModeOrchestrator(QObject):
         self._pospuestas.discard(n)
         self._fallos_foco.discard(n)
         self._reintentos_foco.pop(n, None)
+        self._reintentos_pegado.pop(n, None)
 
     def notificar_listas(self, numeros):
         """main_window llama esto tras cada poll con las páginas marcadas para armado_bot."""
@@ -469,6 +524,22 @@ class AutoModeOrchestrator(QObject):
                     "Armado automático apagado: Quark no respondió en "
                     f"{len(self._fallos_foco)} páginas.")
                 return
+            self._intentar_siguiente_desde_cola()
+            return
+
+        if estado == REINTENTAR_PEGADO:
+            c = self._reintentos_pegado.get(numero, 0) + 1
+            self._reintentos_pegado[numero] = c
+            if c < MAX_REINTENTOS_PEGADO:
+                self._pospuestas.add(numero)
+                self.log.emit(f"P{numero:02d}: pegado no detectado, reintento {c}/{MAX_REINTENTOS_PEGADO}.")
+                self.pegado_fallido.emit(numero, False)
+                self._intentar_siguiente_desde_cola()
+                return
+            # Agotó los reintentos → error de pegado confirmado.
+            self._procesadas.add(numero)
+            self.log.emit(f"P{numero:02d}: pegado no detectado tras {c} intentos → error.")
+            self.pegado_fallido.emit(numero, True)
             self._intentar_siguiente_desde_cola()
             return
 

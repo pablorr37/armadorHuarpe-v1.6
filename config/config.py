@@ -345,6 +345,23 @@ class Config:
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 
+    def auto_valor(self, clave: str):
+        """Valor numérico (string mm, p. ej. '129,574') que el bot escribe en el panel de medidas,
+        o None si no está calibrado. Se guarda como {clave}_valor en [AUTO]."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        v = cfg.get("AUTO", f"{clave}_valor", fallback=None)
+        return v.strip() if isinstance(v, str) and v.strip() else None
+
+    def save_auto_valor(self, clave: str, valor: str) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"][f"{clave}_valor"] = str(valor if valor is not None else "").strip()
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
     def auto_centro(self, clave: str):
         """Centro (x, y) del área calibrada `clave`, o None. Útil para clics."""
         a = self.auto_area(clave)

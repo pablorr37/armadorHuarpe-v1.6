@@ -27,20 +27,28 @@ def normalizar_seccion(s) -> str:
     s = (s or "").strip().lower()
     return "".join(c for c in unicodedata.normalize("NFD", s)
                    if unicodedata.category(c) != "Mn")
-ZOOM_ARMADO = "22"  # % de zoom con el que se calibra/arma (Quark no abre a este zoom por defecto)
+ZOOM_ARMADO = "11"  # % de zoom por defecto (fallback); el valor real es 'zoom_valor' (editable)
 
 # Cada paso: clave, tipo ("punto"|"area"), desc, opcional n (repeticiones por plantilla),
 # y opcional "recurso" (para el gating desde composicion_pagina).
 PASOS_CALIBRACION = [
-    # Área numérica de zoom (abajo-izq. de Quark). El automatizador escribe 22 + Enter ahí
-    # antes de colocar recursos, para que los arrastres caigan en las coords calibradas.
+    # Área numérica de zoom (abajo-izq. de Quark). El automatizador escribe el zoom (11%, editable
+    # en "Valores…") + Enter ahí antes de colocar recursos, para trabajar con la vista calibrada.
     {"clave": "zoom", "tipo": "area",
-     "desc": ("el área numérica del ZOOM de Quark (abajo a la izq.). Elegí un % que permita ver "
-              "las 3 plantillas y TODOS los recursos a la vez — 22% en pantalla 1366×768.")},
+     "desc": ("el área numérica del ZOOM de Quark (abajo a la izq.). Usá 11% (o el valor que hayas "
+              "puesto en «Valores…»), que permite ver las 3 plantillas sin re-centrar la vista.")},
 
     # Palette del script (pegado base c) — puntos de clic
     {"clave": "script", "tipo": "punto", "desc": "el ítem 'Pegar Auto.js' del palette JavaScript"},
     {"clave": "play",   "tipo": "punto", "desc": "el botón Play ▶ del palette JavaScript"},
+
+    # Panel de medidas y selector de plantilla (campos donde el bot escribe valores). Globales.
+    {"clave": "plantilla_sel", "tipo": "punto",
+     "desc": "el SELECTOR DE PLANTILLA (campo donde se escribe 1/2/3 para cambiar de plantilla)"},
+    {"clave": "campo_x", "tipo": "punto", "desc": "el campo X (posición horiz.) del panel de medidas"},
+    {"clave": "campo_y", "tipo": "punto", "desc": "el campo Y (posición vert.) del panel de medidas"},
+    {"clave": "campo_a", "tipo": "punto", "desc": "el campo A (Ancho) del panel de medidas"},
+    {"clave": "campo_al", "tipo": "punto", "desc": "el campo Al (Alto) del panel de medidas"},
 
     # d) Firma: origen (box universal) + destino en cuerpo por plantilla
     {"clave": "firma_src", "tipo": "area", "recurso": "firma",
@@ -54,47 +62,91 @@ PASOS_CALIBRACION = [
     {"clave": "epigrafe_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "epigrafe",
      "desc": "el EPÍGRAFE en el cuerpo — plantilla {i}"},
 
-    # f) Recursos movibles: clonar (Ctrl+D) + arrastrar, por plantilla.
-    #    Tras marcar el `src`, el calibrador clona el recurso en Quark; el usuario marca en
-    #    `clon` DÓNDE quedó el clon (punto de agarre B). En cada `dst_i` el calibrador arrastra
-    #    ese clon al destino para verificar (y deshace con Ctrl+Z). En ejecución se agarra en B.
-    {"clave": "textual_src", "tipo": "area", "recurso": "textual", "desc": "la caja de TEXTUAL"},
-    {"clave": "textual_clon", "tipo": "area", "recurso": "textual",
-     "desc": "el CLON del TEXTUAL (se acaba de duplicar): marcá dónde quedó"},
-    {"clave": "textual_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "textual",
-     "desc": "destino del TEXTUAL — plantilla {i}"},
+    # f) Recursos movibles: caja de origen (src) a clonar. El clon se posiciona escribiendo X/Y
+    #    en el panel (mismos X/Y en las 3 plantillas; el bot cambia de plantilla con el selector).
+    #    El src se calibra UNA vez (a 11% la vista no se re-centra al cambiar de plantilla).
+    # Todas las variantes de textual comparten el X/Y de 'textual', pero cada una tiene su src.
+    {"clave": "textual_src", "tipo": "punto", "recurso": "textual", "desc": "la caja de TEXTUAL simple (origen a clonar)"},
+    {"clave": "textual_x2_src", "tipo": "punto", "recurso": "textual", "desc": "la caja de TEXTUAL x2 (origen a clonar)"},
+    {"clave": "textual_con_foto_src", "tipo": "punto", "recurso": "textual", "desc": "la caja de TEXTUAL con foto (origen a clonar)"},
+    {"clave": "textual_con_foto_xl_src", "tipo": "punto", "recurso": "textual", "desc": "la caja de TEXTUAL con foto XL (origen a clonar)"},
+    {"clave": "dato_src", "tipo": "punto", "recurso": "dato", "desc": "la caja de DATO (origen a clonar)"},
+    {"clave": "numero_src", "tipo": "punto", "recurso": "numero", "desc": "la caja de NÚMERO (origen a clonar)"},
+    {"clave": "qr_src", "tipo": "punto", "recurso": "qr", "desc": "la caja de QR (origen a clonar)"},
 
-    {"clave": "dato_src", "tipo": "area", "recurso": "dato", "desc": "la caja de DATO"},
-    {"clave": "dato_clon", "tipo": "area", "recurso": "dato",
-     "desc": "el CLON del DATO (se acaba de duplicar): marcá dónde quedó"},
-    {"clave": "dato_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "dato",
-     "desc": "destino del DATO — plantilla {i}"},
-
-    {"clave": "numero_src", "tipo": "area", "recurso": "numero", "desc": "la caja de NÚMERO"},
-    {"clave": "numero_clon", "tipo": "area", "recurso": "numero",
-     "desc": "el CLON del NÚMERO (se acaba de duplicar): marcá dónde quedó"},
-    {"clave": "numero_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "numero",
-     "desc": "destino del NÚMERO — plantilla {i}"},
-
-    {"clave": "qr_src", "tipo": "area", "recurso": "qr", "desc": "la caja de QR"},
-    {"clave": "qr_clon", "tipo": "area", "recurso": "qr",
-     "desc": "el CLON del QR (se acaba de duplicar): marcá dónde quedó"},
-    {"clave": "qr_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "qr",
-     "desc": "destino del QR — plantilla {i}"},
-
-    # g) Foto a 3 columnas ancha — TEMPORALMENTE DESHABILITADO (no se calibra ni se ejecuta).
-    #    Para reactivar: descomentar estos pasos y el bloque foto3 en _PaginaWorker.run.
-    # {"clave": "foto_src", "tipo": "area", "recurso": "foto3", "desc": "la caja de FOTO"},
-    # {"clave": "foto_dst", "tipo": "area", "n": PLANTILLAS, "recurso": "foto3",
-    #  "desc": "posición de la FOTO a 3 columnas — plantilla {i}"},
-    # {"clave": "foto_edge", "tipo": "area", "n": PLANTILLAS, "recurso": "foto3",
-    #  "desc": "el BORDE DERECHO de la caja de foto — plantilla {i}"},
-    # {"clave": "foto_rlimit", "tipo": "area", "n": PLANTILLAS, "recurso": "foto3",
-    #  "desc": "el LÍMITE DERECHO de la maqueta — plantilla {i}"},
+    # g) Foto a 3 columnas (wide/ancha): clic sobre cada foto para redimensionarla con A/Al.
+    {"clave": "foto_sel", "tipo": "punto", "n": PLANTILLAS, "recurso": "foto3",
+     "desc": "clic sobre la FOTO a 3 columnas — plantilla {i}"},
 ]
 
-# Recursos movibles (clonar + arrastrar). Firma/epígrafe NO (son reemplazos).
+# Recursos movibles (clonar + posicionar por X/Y). Firma/epígrafe NO (son reemplazos).
 RECURSOS_MOVIBLES = ["textual", "dato", "numero", "qr"]
+
+# El textual tiene variantes por tipo (comp['textual']): cada una clona una caja de origen
+# distinta, pero todas se colocan en el MISMO X/Y de 'textual'.
+TEXTUAL_SRC_POR_TIPO = {
+    "simple": "textual_src",
+    "x2": "textual_x2_src",
+    "con_foto": "textual_con_foto_src",
+    "con_foto_xl": "textual_con_foto_xl_src",
+}
+
+
+def textual_src_key(comp) -> str:
+    """Clave del src a clonar para el textual, según su tipo (default: 'textual_src')."""
+    return TEXTUAL_SRC_POR_TIPO.get((comp or {}).get("textual") or "", "textual_src")
+
+# Valores numéricos (mm, string con coma decimal) que el bot escribe en el panel de medidas.
+# Se exponen/editan en el calibrador ("Valores…") y se guardan por maqueta (cascada sección+aviso);
+# estos son los defaults universales.
+VALORES_DEFAULT = {
+    "zoom_valor": "11",
+    # Zoom mayor para pegar en la ÚLTIMA plantilla (contigua a la anterior): a poco zoom Quark
+    # pega en la plantilla vecina aunque esté seleccionada la correcta.
+    "zoom_valor_final": "60",
+    # Cuántos Backspace (⌫) se presionan al escribir X/Y de un recurso, para borrar el signo '-'
+    # residual del src negativo. Las fotos usan 0.
+    "deletes_recurso": "2",
+    "foto_a": "129,574", "foto_al_wide": "69,467", "foto_al_ancha": "82,166",
+    "textual_x": "55,074", "textual_y": "148,5",
+    "dato_x": "", "dato_y": "",
+    "numero_x": "", "numero_y": "",
+    "qr_x": "", "qr_y": "",
+}
+
+# Claves de valor que dependen del recurso Y del tipo de aviso (posiciones X/Y). El resto de
+# VALORES_EDITABLES son globales (zoom, deletes, foto A/Al). Se cargan por aviso en "Valores…".
+VALORES_RECURSO = [f"{rec}_{c}" for rec in RECURSOS_MOVIBLES for c in ("x", "y")]
+
+# Orden en que se muestran en el diálogo "Valores…" (clave, etiqueta).
+VALORES_EDITABLES = [
+    ("zoom_valor", "Zoom (%)"),
+    ("zoom_valor_final", "Zoom última plantilla (%)"),
+    ("deletes_recurso", "Borrados ⌫ por campo (recursos)"),
+    ("textual_x", "Textual X"), ("textual_y", "Textual Y"),
+    ("dato_x", "Dato X"), ("dato_y", "Dato Y"),
+    ("numero_x", "Número X"), ("numero_y", "Número Y"),
+    ("qr_x", "QR X"), ("qr_y", "QR Y"),
+    ("foto_a", "Foto A (Ancho)"),
+    ("foto_al_wide", "Foto Al (wide)"), ("foto_al_ancha", "Foto Al (ancha)"),
+]
+
+
+def valor_default(clave: str) -> str:
+    """Valor por defecto (universal) de un valor numérico calibrable."""
+    return VALORES_DEFAULT.get(clave, "")
+
+
+def foto3_variante(comp: dict):
+    """'wide' | 'ancha' | None según foto_tipo de la composición (3 columnas)."""
+    ft = ((comp or {}).get("foto_tipo") or "").lower()
+    if "3" not in ft:
+        return None
+    if "wide" in ft:
+        return "wide"
+    if "anch" in ft:
+        return "ancha"
+    return None
 
 # Tipos de aviso (para calibrar una maqueta distinta por sección + aviso). El valor coincide
 # con composicion_pagina()['aviso_tipo']; "" = sin aviso. El label es para la UI del calibrador.

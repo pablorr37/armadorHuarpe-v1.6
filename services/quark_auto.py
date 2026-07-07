@@ -37,6 +37,12 @@ CLON_OFFSET_Y = 14
 # Velocidad de los pasos POSTERIORES al pegado (d–g): 15% más rápido → esperas × 0.85.
 FACTOR_POST_PEGADO = 0.85
 
+# pyautogui.hotkey() por defecto usa interval=0.0 (sin pausa entre keyDown/keyUp de cada tecla).
+# Con SendInput sintético eso puede hacer que Quark reciba la tecla principal (p. ej. F4) ANTES
+# de registrar el modificador (Ctrl) como sostenido → llega "F4 solo" en vez de "Ctrl+F4" (bug
+# confirmado: abre 'Estilos OpenType' y el cierre nunca ocurre). 60 ms evita esa carrera.
+HOTKEY_INTERVAL = 0.06
+
 
 def encontrar_hwnd_quark():
     """Devuelve el HWND de la ventana principal de Quark, o None (solo Windows)."""
@@ -247,6 +253,91 @@ class QuarkAutomator:
             return None
         return encontrado["rect"]
 
+    def _hay_dialogo_con_texto(self, textos) -> bool:
+        """True si alguna ventana visible (o alguno de sus controles hijos, de cualquier clase)
+        contiene alguno de `textos` como SUBSTRING (case-insensitive). Sirve para detectar el
+        cartel 'Pegado finalizado' (su texto es un Static, no un Button)."""
+        if self.simular:
+            return False
+        try:
+            import ctypes
+            import ctypes.wintypes as w
+        except Exception:
+            return False
+        user32 = ctypes.windll.user32
+        objetivo = [t.strip().lower() for t in textos if t and t.strip()]
+        hallado = {"ok": False}
+
+        def _texto_de(hwnd) -> str:
+            tl = user32.GetWindowTextLengthW(hwnd)
+            if tl <= 0:
+                return ""
+            tb = ctypes.create_unicode_buffer(tl + 1)
+            user32.GetWindowTextW(hwnd, tb, tl + 1)
+            return (tb.value or "").strip().lower()
+
+        EnumChildProc = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+
+        def _child(hwnd, _l):
+            txt = _texto_de(hwnd)
+            if txt and any(o in txt for o in objetivo):
+                hallado["ok"] = True
+                return False
+            return True
+
+        _child_c = EnumChildProc(_child)
+        EnumWindowsProc = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+
+        def _top(hwnd, _l):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            txt = _texto_de(hwnd)
+            if txt and any(o in txt for o in objetivo):
+                hallado["ok"] = True
+                return False
+            user32.EnumChildWindows(hwnd, _child_c, 0)
+            return not hallado["ok"]
+
+        try:
+            user32.EnumWindows(EnumWindowsProc(_top), 0)
+        except Exception as e:
+            _log.warning("EnumWindows (texto) falló: %s", e)
+        return hallado["ok"]
+
+    def esperar_cartel_pegado(self, punto_ok, timeout: float = 60.0) -> bool:
+        """Espera el cartel 'Pegado finalizado' (handshake con el JS). Si aparece, hace clic en el
+        OK calibrado (o Enter si no hay calibración) y devuelve True. Mientras tanto cierra el cartel
+        de fuentes si aparece. Devuelve False si no aparece dentro de `timeout` segundos."""
+        if self.simular:
+            _log.info("[SIM] esperar_cartel_pegado → OK (simulado)")
+            return True
+        import time as _t
+        t0 = _t.time()
+        while _t.time() - t0 < timeout:
+            self._check_cancel()
+            if self._hay_dialogo_con_texto(["Pegado finalizado"]):
+                if punto_ok:
+                    self.click(int(punto_ok[0]), int(punto_ok[1]))
+                else:
+                    self._pyautogui.press("enter")
+                self.esperar(0.4)
+                # Esperar a que el modal cierre (ventana principal re-habilitada), hasta ~3s.
+                t1 = _t.time()
+                while _t.time() - t1 < 3.0 and self._hay_modal_quark():
+                    self.esperar(0.2)
+                _log.info("Cartel 'Pegado finalizado' detectado → OK y continúo.")
+                return True
+            # Cartel de fuentes (u otro modal que NO sea el de éxito) → cerrarlo y seguir esperando.
+            if self._rect_boton_por_texto(["Listar fuentes", "Continuar", "Continue"]) or \
+                    self._hay_modal_quark():
+                self._pyautogui.press("right")
+                self.esperar(0.2)
+                self._pyautogui.press("enter")
+                self.esperar(0.4)
+            self.esperar(0.5)
+        _log.warning("No apareció el cartel 'Pegado finalizado' tras %.0fs.", timeout)
+        return False
+
     def _hay_modal_quark(self) -> bool:
         """True si hay un diálogo MODAL bloqueando Quark (ventana principal deshabilitada).
         Es la forma robusta de detectar el cartel de fuentes (custom/pantalla completa), que
@@ -342,7 +433,7 @@ class QuarkAutomator:
         except Exception:
             return None
 
-    def set_zoom(self, punto, valor: str = "22") -> bool:
+    def set_zoom(self, punto, valor: str = "11") -> bool:
         """Fija el zoom en el campo numérico calibrado y lo VERIFICA leyendo el campo.
         Deja el documento al zoom con el que se calibró (los arrastres dependen de eso).
         Devuelve True si quedó en `valor` (o no se pudo leer → best-effort), False si se
@@ -472,7 +563,7 @@ class QuarkAutomator:
         if not self.asegurar_foco():
             _log.warning("clonar abortado: Quark no está en primer plano.")
             return
-        self._pyautogui.hotkey("ctrl", "d")
+        self._pyautogui.hotkey("ctrl", "d", interval=HOTKEY_INTERVAL)
         self.esperar(espera * FACTOR_POST_PEGADO)
 
     def deshacer(self, veces: int = 1, espera: float = 0.4):
@@ -485,17 +576,92 @@ class QuarkAutomator:
             _log.warning("deshacer abortado: Quark no está en primer plano.")
             return
         for _ in range(max(1, int(veces))):
-            self._pyautogui.hotkey("ctrl", "z")
+            self._pyautogui.hotkey("ctrl", "z", interval=HOTKEY_INTERVAL)
             self.esperar(espera * FACTOR_POST_PEGADO)
+
+    def escribir_en_campo(self, punto, valor, enter: bool = True, espera: float = 0.25,
+                          deletes: int = 0) -> bool:
+        """Doble-clic en el campo `punto` (selecciona su contenido), presiona `deletes` veces
+        Backspace (⌫, 'borrado') y escribe `valor`. El Backspace borra hacia atrás: primero la
+        selección y luego el signo '-' residual del src negativo (recursos=2, fotos=0). NO presiona
+        Esc: el ítem seleccionado debe seguir seleccionado para aplicarle la geometría."""
+        if not punto:
+            _log.warning("escribir_en_campo: sin punto calibrado (valor=%r).", valor)
+            return False
+        sval = str(valor).strip()
+        if self.simular:
+            _log.info("[SIM] escribir_en_campo %s = %r (bksp=%d)%s", punto, sval, deletes,
+                      " + Enter" if enter else "")
+            return True
+        if not self.asegurar_foco():
+            _log.warning("escribir_en_campo abortado: Quark no está en primer plano.")
+            return False
+        pg = self._pyautogui
+        # Doble-clic selecciona el contenido del campo (mismo patrón que set_zoom).
+        pg.click(int(punto[0]), int(punto[1]), clicks=2, interval=0.08)
+        self.esperar(0.2 * FACTOR_POST_PEGADO)
+        for _ in range(max(0, int(deletes))):
+            pg.press("backspace")
+            self.esperar(0.05 * FACTOR_POST_PEGADO)
+        pg.typewrite(sval, interval=0.05)
+        self.esperar(0.1 * FACTOR_POST_PEGADO)
+        if enter:
+            pg.press("enter")
+        self.esperar(espera * FACTOR_POST_PEGADO)
+        return True
+
+    def seleccionar_plantilla(self, punto, n) -> bool:
+        """Escribe n (1/2/3) en el selector de plantilla para cambiar la plantilla activa."""
+        return self.escribir_en_campo(punto, str(n))
+
+    def cortar(self, espera: float = 0.4):
+        """Corta el ítem seleccionado (Ctrl+X)."""
+        if self.simular:
+            _log.info("[SIM] cortar (Ctrl+X)")
+            return
+        if not self.asegurar_foco():
+            _log.warning("cortar abortado: Quark no está en primer plano.")
+            return
+        self._pyautogui.hotkey("ctrl", "x", interval=HOTKEY_INTERVAL)
+        self.esperar(espera * FACTOR_POST_PEGADO)
+
+    def pegar(self, espera: float = 0.4):
+        """Pega el ítem del portapapeles (Ctrl+V) en la plantilla/vista activa."""
+        if self.simular:
+            _log.info("[SIM] pegar (Ctrl+V)")
+            return
+        if not self.asegurar_foco():
+            _log.warning("pegar abortado: Quark no está en primer plano.")
+            return
+        self._pyautogui.hotkey("ctrl", "v", interval=HOTKEY_INTERVAL)
+        self.esperar(espera * FACTOR_POST_PEGADO)
+
+    def redimensionar_foto(self, sel, campo_a, campo_al, a_val, al_val) -> bool:
+        """Selecciona la foto (clic) y escribe A (Ancho) y Al (Alto) en el panel de medidas."""
+        if not sel:
+            return False
+        if self.simular:
+            _log.info("[SIM] redimensionar_foto sel=%s A=%r Al=%r", sel, a_val, al_val)
+            return True
+        if not self.asegurar_foco():
+            _log.warning("redimensionar_foto abortado: Quark no está en primer plano.")
+            return False
+        self.click(int(sel[0]), int(sel[1]))          # seleccionar la foto
+        self.esperar(0.2 * FACTOR_POST_PEGADO)
+        if a_val:
+            self.escribir_en_campo(campo_a, a_val)
+        if al_val:
+            self.escribir_en_campo(campo_al, al_val)
+        return True
 
     def seleccionar_todo_y_copiar(self, espera: float = 0.3):
         """Selecciona todo el texto del box activo y lo copia (Ctrl+A, Ctrl+C)."""
         if self.simular:
             _log.info("[SIM] seleccionar_todo_y_copiar (Ctrl+A, Ctrl+C)")
             return
-        self._pyautogui.hotkey("ctrl", "a")
+        self._pyautogui.hotkey("ctrl", "a", interval=HOTKEY_INTERVAL)
         self.esperar(0.15 * FACTOR_POST_PEGADO)
-        self._pyautogui.hotkey("ctrl", "c")
+        self._pyautogui.hotkey("ctrl", "c", interval=HOTKEY_INTERVAL)
         self.esperar(espera * FACTOR_POST_PEGADO)
 
     def arrastrar(self, p_src, p_dst, duracion: float = 0.6):
@@ -542,9 +708,9 @@ class QuarkAutomator:
             return False
         self.click(int(p_dst[0]), int(p_dst[1]), dobles=True)  # entrar al texto
         self.esperar(0.15 * FACTOR_POST_PEGADO)
-        self._pyautogui.hotkey("ctrl", "a")   # seleccionar el texto a reemplazar
+        self._pyautogui.hotkey("ctrl", "a", interval=HOTKEY_INTERVAL)   # seleccionar el texto
         self.esperar(0.15 * FACTOR_POST_PEGADO)
-        self._pyautogui.hotkey("ctrl", "alt", "u")
+        self._pyautogui.hotkey("ctrl", "alt", "u", interval=HOTKEY_INTERVAL)
         self.esperar(0.3 * FACTOR_POST_PEGADO)
         return True
 
@@ -608,7 +774,7 @@ class QuarkAutomator:
         if not self.asegurar_foco():
             _log.warning("guardar abortado: Quark no está en primer plano.")
             return
-        self._pyautogui.hotkey("ctrl", "s")
+        self._pyautogui.hotkey("ctrl", "s", interval=HOTKEY_INTERVAL)
         self.esperar(0.8)
         self._pyautogui.press("enter")
         self.esperar(0.6)
@@ -621,7 +787,7 @@ class QuarkAutomator:
         if not self.asegurar_foco():
             _log.warning("cerrar abortado: Quark no está en primer plano.")
             return
-        self._pyautogui.hotkey("ctrl", "f4")
+        self._pyautogui.hotkey("ctrl", "f4", interval=HOTKEY_INTERVAL)
         self.esperar(0.8)
         self._pyautogui.press("enter")
         self.esperar(0.6)

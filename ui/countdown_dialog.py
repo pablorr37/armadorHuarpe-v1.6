@@ -15,10 +15,11 @@ class CountdownDialog(QDialog):
     """`exec_()` devuelve QDialog.Accepted si expira la cuenta (o el usuario deja seguir),
     o QDialog.Rejected si cancela."""
 
-    def __init__(self, segundos: int, numero=None, parent=None):
+    def __init__(self, segundos: int, numero=None, parent=None, titulo=None, mensaje=None):
         super().__init__(parent)
         self._restante = max(1, int(segundos))
-        self.setWindowTitle("Armado automático")
+        self._mensaje = mensaje   # si se pasa, reemplaza el texto por defecto (aviso de inicio)
+        self.setWindowTitle(titulo or "Armado automático")
         self.setModal(True)
         # Siempre al frente: si Quark (u otra ventana) intenta robar el foco durante la
         # cuenta, el aviso debe seguir visible por encima.
@@ -26,13 +27,13 @@ class CountdownDialog(QDialog):
         self.setMinimumWidth(360)
 
         lay = QVBoxLayout(self)
-        titulo = "Iniciando pegado automático"
-        if numero is not None:
-            titulo += f" (página {int(numero):02d})"
+        encabezado = titulo or "Iniciando pegado automático"
+        if titulo is None and numero is not None:
+            encabezado += f" (página {int(numero):02d})"
         self._label = QLabel()
         self._label.setAlignment(Qt.AlignCenter)
         self._label.setWordWrap(True)
-        lay.addWidget(QLabel(f"<b>{titulo}</b>", alignment=Qt.AlignCenter))
+        lay.addWidget(QLabel(f"<b>{encabezado}</b>", alignment=Qt.AlignCenter))
         lay.addWidget(self._label)
 
         self._barra = QProgressBar()
@@ -58,10 +59,13 @@ class CountdownDialog(QDialog):
         self.activateWindow()
 
     def _actualizar_texto(self):
-        self._label.setText(
-            f"El bot tomará el control del mouse y el teclado en "
-            f"<b>{self._restante}</b> segundo(s).<br>Cancelá si necesitás usar el equipo."
-        )
+        if self._mensaje:
+            self._label.setText(f"{self._mensaje}<br>(continúa en <b>{self._restante}</b> s)")
+        else:
+            self._label.setText(
+                f"El bot tomará el control del mouse y el teclado en "
+                f"<b>{self._restante}</b> segundo(s).<br>Cancelá si necesitás usar el equipo."
+            )
         self._barra.setValue(self._restante)
 
     def _tick(self):

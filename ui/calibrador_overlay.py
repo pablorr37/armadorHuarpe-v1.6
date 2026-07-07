@@ -25,11 +25,13 @@ from PyQt5.QtGui import QPainter, QColor, QPen
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QApplication,
     QInputDialog, QDialog, QListWidget, QListWidgetItem, QDialogButtonBox, QComboBox,
+    QLineEdit, QFormLayout, QGroupBox,
 )
 
 from config.config import config_global
 from services.armado_auto_schema import (
     pasos_expandidos, normalizar_seccion, RECURSOS_MOVIBLES, AVISO_TIPOS, token_aviso,
+    claves_cascada, valor_default, VALORES_EDITABLES, VALORES_RECURSO,
 )
 from services.quark_auto import QuarkAutomator
 
@@ -141,7 +143,7 @@ class _CaptureLayer(QWidget):
 class _PanelCalib(QWidget):
     """Panel flotante que NO roba el foco (Quark se ve; el clic lo captura la capa)."""
 
-    def __init__(self, on_atras, on_saltar, on_cancelar, on_config=None):
+    def __init__(self, on_atras, on_saltar, on_cancelar, on_config=None, on_valores=None):
         super().__init__(None)
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -180,19 +182,24 @@ class _PanelCalib(QWidget):
         self._btn_saltar.clicked.connect(on_saltar)
         self._btn_cancelar.clicked.connect(on_cancelar)
 
-        # Configuración de maquetas (sección + tipo de aviso + excluidas).
+        # Configuración de maquetas (sección + tipo de aviso + excluidas) y Valores numéricos.
         self._btn_config = QPushButton("Configuración de maquetas", self)
-        self._btn_config.setCursor(Qt.PointingHandCursor)
-        self._btn_config.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{_ACENTO};border:1px solid {_ACENTO};"
-            "border-radius:8px;padding:6px 12px;font-size:12px;}"
-            "QPushButton:hover{background:rgba(231,136,95,0.15);}"
-        )
+        self._btn_valores = QPushButton("Valores…", self)
+        for b in (self._btn_config, self._btn_valores):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{_ACENTO};border:1px solid {_ACENTO};"
+                "border-radius:8px;padding:6px 12px;font-size:12px;}"
+                "QPushButton:hover{background:rgba(231,136,95,0.15);}"
+            )
         if on_config:
             self._btn_config.clicked.connect(on_config)
+        if on_valores:
+            self._btn_valores.clicked.connect(on_valores)
         fila_maq = QHBoxLayout()
         fila_maq.setSpacing(8)
         fila_maq.addWidget(self._btn_config)
+        fila_maq.addWidget(self._btn_valores)
         fila_maq.addStretch(1)
 
         fila = QHBoxLayout()
@@ -278,7 +285,8 @@ class CalibradorController(QObject):
 
         self._capture = _CaptureLayer(self._on_mark, self._on_key)
         self._panel = _PanelCalib(self._atras, self._saltar, self._cancelar,
-                                  on_config=self._on_config_maquetas)
+                                  on_config=self._on_config_maquetas,
+                                  on_valores=self._on_valores)
         self._panel.posicionar_inicial()
 
         # Capa primero, panel encima (para que sus botones reciban el clic).
@@ -502,6 +510,139 @@ class CalibradorController(QObject):
         self._cerrar()
         lanzar_calibrador(parent=self._parent, on_finish=self._on_finish,
                           seccion=sec, aviso=aviso)
+
+    def _valor_actual(self, clave: str) -> str:
+        """Valor numérico en efecto para esta maqueta: la clave más específica calibrada
+        (cascada sección+aviso), o el default universal."""
+        v = config_global.auto_valor(self._clave(clave))
+        if v:
+            return v
+        for k in claves_cascada(self._seccion, self._aviso, clave):
+            v = config_global.auto_valor(k)
+            if v:
+                return v
+        return valor_default(clave)
+
+    def _valor_recurso(self, clave: str, aviso) -> str:
+        """Valor efectivo (cascada) de un X/Y de recurso para el `aviso` dado, o el default."""
+        for k in claves_cascada(self._seccion, aviso, clave):
+            v = config_global.auto_valor(k)
+            if v:
+                return v
+        return valor_default(clave)
+
+    def _clave_recurso(self, clave: str, aviso) -> str:
+        """Clave donde se guarda un X/Y de recurso según sección + aviso:
+          - con sección → '{sec}__{aviso}__clave' (dedicada);
+          - sin sección, con aviso → '{aviso}__clave' (universal por aviso);
+          - sin sección y "Sin aviso" → 'clave' base (respeta los datos 'vacía' existentes)."""
+        av = token_aviso(aviso)
+        if self._seccion:
+            return f"{self._seccion}__{av}__{clave}"
+        if not aviso:
+            return clave
+        return f"{av}__{clave}"
+
+    def _on_valores(self):
+        """Diálogo para editar los valores numéricos del panel de medidas. Las posiciones X/Y de
+        los recursos son POR TIPO DE AVISO (desplegable); zoom/foto/deletes son globales."""
+        # Ocultar capas (la de captura se traga los clics del diálogo).
+        self._capture.hide()
+        self._panel.hide()
+        QApplication.processEvents()
+
+        recurso_claves = set(VALORES_RECURSO)
+        globales = [(c, e) for c, e in VALORES_EDITABLES if c not in recurso_claves]
+        recursos = [(c, e) for c, e in VALORES_EDITABLES if c in recurso_claves]
+
+        dlg = QDialog(self._parent)
+        dlg.setWindowTitle("Valores del panel de medidas")
+        dlg.setModal(True)
+        lay = QVBoxLayout(dlg)
+        sec_label = self._seccion if self._seccion else "Todas (universal)"
+        lay.addWidget(QLabel(f"Sección: <b>{sec_label}</b> — valores en mm (coma decimal)"))
+
+        def _colapsable(titulo, inner: QWidget, expandido: bool = True) -> QGroupBox:
+            box = QGroupBox(titulo)
+            box.setCheckable(True)
+            box.setChecked(expandido)
+            v = QVBoxLayout(box)
+            v.setContentsMargins(8, 4, 8, 8)
+            v.addWidget(inner)
+            inner.setVisible(expandido)
+            box.toggled.connect(inner.setVisible)
+            return box
+
+        # Grupo colapsable: valores globales (independientes del aviso): clave base/universal.
+        w_glob = QWidget()
+        form_g = QFormLayout(w_glob)
+        ed_glob = {}
+        for clave, etiqueta in globales:
+            le = QLineEdit(config_global.auto_valor(clave) or valor_default(clave))
+            ed_glob[clave] = le
+            form_g.addRow(etiqueta + ":", le)
+        lay.addWidget(_colapsable("Globales (zoom, foto, deletes)", w_glob, expandido=False))
+
+        # Grupo colapsable: posiciones de recursos POR TIPO DE AVISO.
+        w_rec = QWidget()
+        v_rec = QVBoxLayout(w_rec)
+        v_rec.setContentsMargins(0, 0, 0, 0)
+        cbo_av = QComboBox(w_rec)
+        for val, label in AVISO_TIPOS:
+            cbo_av.addItem(label, val)
+        v_rec.addWidget(cbo_av)
+        form_r = QFormLayout()
+        ed_rec = {}
+        for clave, etiqueta in recursos:
+            le = QLineEdit()
+            ed_rec[clave] = le
+            form_r.addRow(etiqueta + ":", le)
+        v_rec.addLayout(form_r)
+        lay.addWidget(_colapsable("Posiciones de recursos por tipo de aviso", w_rec, expandido=True))
+
+        # Estado: aviso actual mostrado y edits pendientes por aviso (se vuelcan al aceptar).
+        estado = {"aviso": cbo_av.currentData()}
+        pend: dict = {}
+
+        def _cargar(aviso):
+            guardados = pend.get(aviso, {})
+            for clave, le in ed_rec.items():
+                le.setText(guardados.get(clave, self._valor_recurso(clave, aviso)))
+
+        def _volcar(aviso):
+            pend[aviso] = {clave: le.text().strip() for clave, le in ed_rec.items()}
+
+        def _cambio_aviso(_i):
+            _volcar(estado["aviso"])          # guardar lo editado del aviso previo
+            estado["aviso"] = cbo_av.currentData()
+            _cargar(estado["aviso"])
+
+        _cargar(estado["aviso"])
+        cbo_av.currentIndexChanged.connect(_cambio_aviso)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+
+        if dlg.exec_() == QDialog.Accepted:
+            _volcar(estado["aviso"])          # volcar el aviso visible
+            # Globales (clave base/universal).
+            for clave, le in ed_glob.items():
+                config_global.save_auto_valor(clave, le.text().strip())
+            # Recursos por aviso (solo campos no vacíos).
+            for aviso, valores in pend.items():
+                for clave, texto in valores.items():
+                    if texto:
+                        config_global.save_auto_valor(self._clave_recurso(clave, aviso), texto)
+
+        # Restaurar capas.
+        self._capture.show()
+        self._capture.raise_()
+        self._panel.show()
+        self._panel.raise_()
+        self._capture.setFocus()
+        QApplication.processEvents()
 
     def _on_excluidas(self):
         actuales = config_global.auto_excluidas()
