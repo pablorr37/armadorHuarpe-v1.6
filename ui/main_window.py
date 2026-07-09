@@ -2079,9 +2079,11 @@ class MainWindow(QMainWindow):
         if resultado and resultado.suffix.lower() not in (".pdf", ".qxp"):
             resultado = None
 
-        # 2) Si no hay QXP/PDF en destinos, buscar en materiales (estado "proceso")
+        # 2) Si el estado no resolvió archivo, usar el resolver canónico: SIEMPRE el QXP
+        #    mejor ubicado (apdf > mandar > final > base > materiales). Evita abrir el
+        #    borrador de materiales cuando ya existe copia avanzada en base/final.
         if not resultado:
-            resultado = self.controller.file_service.find_qxp_en_materiales(numero)
+            resultado = self.controller.file_service.qxp_mejor_ubicado(numero)
 
         # 3) Fallback: si no hay QXP ni PDF y la página tiene texto → abrir editor
         if not resultado or not resultado.exists():
@@ -4133,8 +4135,9 @@ class MainWindow(QMainWindow):
         self.on_devolver()
 
     def _accion_quitar_asignacion(self, numero: int):
+        """Radial 'Quitar asignación': acción directa (nunca depende del texto del botón)."""
         self._refresh_after_action(numero)
-        self.on_quitar()
+        self._quitar_asignacion_directo(numero)
 
     def _actualizar_paginas_secciones_extension(self):
         """#5 — reescribe paginas_secciones.json (puente a la extensión) con las
@@ -4633,27 +4636,9 @@ class MainWindow(QMainWindow):
         _log.info("[POOL] Hilo liberado correctamente.")
 
     def _aplicar_restriccion_pool(self) -> None:
-        """
-        Bloquea o desbloquea el botón 'Cargar link' de la toolbar según si
-        el pool scraper está activo. Se llama:
-          - Al iniciar/detener/terminar el pool (_actualizar_btn_pool_scan).
-          - Al volver al panel de armado con el pool activo (on_toggle_armar_mono).
-          - Al actualizar el boton_quitar en actualizar_info_pagina (ya inline).
-
-        Sólo actúa cuando el botón muestra "Cargar link"; los estados
-        "Asignar" y "Quitar asignación" no tienen riesgo de colisión.
-        """
-        corriendo = self._pool_estado != "idle"
-        btn = getattr(self, "boton_quitar", None)
-        if btn is None:
-            return
-        if btn.text().strip().lower() == "cargar link":
-            if corriendo:
-                btn.setEnabled(False)
-                btn.setToolTip("El bot está en uso con la lista de noticias. Esperá a que termine.")
-            else:
-                btn.setEnabled(True)
-                btn.setToolTip("")
+        """El modo 'Cargar link' del botón fue eliminado (scraping por link deprecado):
+        'Asignar' y 'Quitar asignación' no colisionan con el pool → no hay nada que restringir."""
+        return
 
     def _actualizar_btn_pool_scan(self) -> None:
         """
@@ -5984,21 +5969,24 @@ class MainWindow(QMainWindow):
 
             self.boton_pegar.setEnabled(asignacion_local and (bool(frags) or es_completa))
 
+            # El viejo modo "Cargar link" (scraping deprecado) fue eliminado: el botón es solo
+            # Asignar / Quitar asignación, deshabilitado si no hay nada que asignar.
             if not tiene_txt and not es_completa:
-                self.boton_quitar.setText("Cargar link")
-                if self._pool_estado != "idle":
-                    self.boton_quitar.setEnabled(False)
-                    self.boton_quitar.setToolTip("El bot está en uso con la lista de noticias. Esperá a que termine.")
-                else:
-                    self.boton_quitar.setEnabled(True)
-                    self.boton_quitar.setToolTip("")
-            else:
                 if asignada_cualquiera:
                     self.boton_quitar.setText("Quitar asignación")
                     self.boton_quitar.setEnabled(True)
+                    self.boton_quitar.setToolTip("")
                 else:
                     self.boton_quitar.setText("Asignar")
-                    self.boton_quitar.setEnabled(True)
+                    self.boton_quitar.setEnabled(False)
+                    self.boton_quitar.setToolTip("No hay TXT en materiales para asignar.")
+            else:
+                if asignada_cualquiera:
+                    self.boton_quitar.setText("Quitar asignación")
+                else:
+                    self.boton_quitar.setText("Asignar")
+                self.boton_quitar.setEnabled(True)
+                self.boton_quitar.setToolTip("")
             # Abrir Quark disponible si hay qxp en final/base (sin perfiles).
             self.boton_abrir_quark.setEnabled(
                 bool(self.controller.file_service.find_qxp_final(pagina.numero)
@@ -6190,11 +6178,10 @@ class MainWindow(QMainWindow):
         # 1) Resolver el archivo asociado
         path = self.controller.archivo_asociado_a_estado(self.pagina_activa)
 
-        # 2) Forzar QXP: si no es QXP o no existe, buscar explícitamente QXP en Final/Base
+        # 2) Forzar QXP: si no es QXP o no existe, usar el resolver canónico
+        #    (apdf > mandar > final > base > materiales — mismo que doble clic y pegado).
         if not (path and path.exists() and path.suffix.lower() == ".qxp"):
-            n = self.pagina_activa
-            path = (self.controller.file_service.find_qxp_final(n)
-                    or self.controller.file_service.find_qxp_base(n))
+            path = self.controller.file_service.qxp_mejor_ubicado(self.pagina_activa)
 
         if not (path and path.exists() and path.suffix.lower() == ".qxp"):
             QMessageBox.information(self, "Abrir Quark", "No encontré un QXP para esta página.")
@@ -6527,152 +6514,91 @@ class MainWindow(QMainWindow):
 
 
     def on_quitar(self):
+        """Botón toolbar Asignar/Quitar asignación. El viejo doble uso por texto ("Cargar link")
+        quedó eliminado: cada modo delega en su acción directa (las mismas del menú radial)."""
         if not getattr(self, "base_activa", False) or self.pagina_activa is None:
             return
 
         numero = self.pagina_activa
         etiqueta = self.boton_quitar.text().strip().lower()
 
-        if "cargar link" in etiqueta:
-            link, ok = QInputDialog.getText(self, "Cargar link", "Pegá el link de la nota:")
-            if not ok or not link.strip():
-                return
-             # 🔸 Estado UI intermedio (igual que Agregar nota)
-            self.boton_quitar.setEnabled(False)
-            self.boton_quitar.setText("⏳")
-            self.statusBar().showMessage(f"P{numero:02d}: Cargando link…", 4000)
-
-            try:
-                self.controller.enqueue_scrape(numero, link.strip())
-                self.statusBar().showMessage(f"P{numero:02d}: link cargado…", 3000)
-                # El refresco real vendrá luego, cuando exista TXT
-            except Exception as e:
-                QMessageBox.critical(self, "Cargar link", str(e))
-                # fallback inmediato
-                self.boton_quitar.setEnabled(True)
-
-        if "asignar" in etiqueta:
-            try:
-                pagina = self.controller.gestor_paginas.obtener_pagina(numero)
-                entry = self.controller.file_service.read_page_entry(pagina.numero)
-                tiene_aviso = entry.get("aviso_full", False) or entry.get("aviso_doblemedia", False)
-                txt_path = self.controller.file_service.obtener_txt(numero)
-                pagina = self.controller.gestor_paginas.obtener_pagina(numero)
-                # --- CASO 1: página con aviso full ---
-                if tiene_aviso:
-                    self.controller.file_service.mark_assigned(
-                        numero,
-                        txt_name="",
-                        by=(self.controller.usuario or "desconocido"),
-                        apagar_aviso_full=False
-                    )
-                    pag = self.controller.gestor_paginas.obtener_pagina(numero)
-                    if pag:
-                        pag.asignada_por_ini = True
-
-                    self._despues_de_cambio_estado(numero)
-                    self.colorear_paginas()
-                    self.actualizar_info_pagina(pag)
-                    return
-
-                # --- CASO 2: página SIN aviso full → exige TXT ---
-                if txt_path is None or not txt_path.exists():
-                    QMessageBox.warning(
-                        self,
-                        "Asignar",
-                        "No hay TXT en materiales para asignar."
-                    )
-                    return
-
-                # --- Asignación normal con texto ---
-                self.controller.file_service.mark_assigned(
-                    numero,
-                    txt_path.name,
-                    by=(self.controller.usuario or "desconocido")
-                )
-
-                pag = self.controller.gestor_paginas.obtener_pagina(numero)
-                if pag:
-                    pag.asignada_por_ini = True
-
-                self._despues_de_cambio_estado(numero)
-                self.colorear_paginas()
-                self.actualizar_info_pagina(pag)
-
-            except Exception as e:
-                QMessageBox.critical(self, "Asignar", str(e))
-            return
-
         if "quitar asignación" in etiqueta:
+            self._quitar_asignacion_directo(numero)
+            return
+        if "asignar" in etiqueta:
+            self._accion_asignar_directo(numero)
+            return
 
-            # ----------------------------------------
-            # 1) Detectar nombre real del QXP (sin tocar disco)
-            # ----------------------------------------
-            qxp_real = None
+    def _quitar_asignacion_directo(self, numero: int):
+        """Quita la asignación de la página indicada (lógica directa, sin depender del texto
+        del botón — la usa el menú radial y el botón de toolbar)."""
+        # ----------------------------------------
+        # 1) Detectar nombre real del QXP (sin tocar disco)
+        # ----------------------------------------
+        qxp_real = None
+        try:
+            # Buscar en materiales/Pnn/ primero (migración JSON 2026-05-06)
+            qxp_real = self.controller.file_service.find_qxp_en_materiales(numero)
+            if not qxp_real:
+                rutas = self.controller.file_service.rutas or {}
+                en_proc_dir = Path(rutas.get("personal_folder") or "")
+                if en_proc_dir.exists():
+                    qxp_real = self.controller.file_service.buscar_qxp_por_numero(en_proc_dir, numero)
+        except Exception as e:
+            _log.warning(f"[WARN] Error al detectar QXP de P{numero:02d}: {e}")
+
+        # ----------------------------------------
+        # 1b) Guard: no quitar asignación si el QXP está abierto en Quark.
+        #     (Si se borrara con el archivo abierto, el sistema creería que
+        #      no hay QXP y al re-asignar generaría Pnn (2).qxp.)
+        # ----------------------------------------
+        if qxp_real and qxp_real.exists():
             try:
-                # Buscar en materiales/Pnn/ primero (migración JSON 2026-05-06)
-                qxp_real = self.controller.file_service.find_qxp_en_materiales(numero)
-                if not qxp_real:
-                    rutas = self.controller.file_service.rutas or {}
-                    en_proc_dir = Path(rutas.get("personal_folder") or "")
-                    if en_proc_dir.exists():
-                        qxp_real = self.controller.file_service.buscar_qxp_por_numero(en_proc_dir, numero)
-            except Exception as e:
-                _log.warning(f"[WARN] Error al detectar QXP de P{numero:02d}: {e}")
-
-            # ----------------------------------------
-            # 1b) Guard: no quitar asignación si el QXP está abierto en Quark.
-            #     (Si se borrara con el archivo abierto, el sistema creería que
-            #      no hay QXP y al re-asignar generaría Pnn (2).qxp.)
-            # ----------------------------------------
-            if qxp_real and qxp_real.exists():
-                try:
-                    bloqueado = self.controller.file_service._archivo_bloqueado(qxp_real)
-                except Exception:
-                    bloqueado = False
-                if bloqueado:
-                    QMessageBox.warning(
-                        self,
-                        "Archivo de Quark abierto",
-                        f"El archivo de Quark está abierto:\n\n{qxp_real.name}\n\n"
-                        "Cerralo en QuarkXPress antes de quitar la asignación."
-                    )
-                    return
-
-            # ----------------------------------------
-            # 2) Armar mensaje según si existe QXP
-            # ----------------------------------------
-            if qxp_real and qxp_real.exists():
-                msg = (
-                    "Se eliminará el archivo de Quark:\n\n"
-                    f"{qxp_real.name}\n\n"
-                    "¿Deseás continuar?"
+                bloqueado = self.controller.file_service._archivo_bloqueado(qxp_real)
+            except Exception:
+                bloqueado = False
+            if bloqueado:
+                QMessageBox.warning(
+                    self,
+                    "Archivo de Quark abierto",
+                    f"El archivo de Quark está abierto:\n\n{qxp_real.name}\n\n"
+                    "Cerralo en QuarkXPress antes de quitar la asignación."
                 )
-                borrar_qxp = True
-            else:
-                msg = "¿Seguro que querés quitar la asignación? (El TXT queda en materiales)"
-                borrar_qxp = False
-
-            resp = QMessageBox.question(
-                self,
-                "Quitar asignación",
-                msg,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if resp != QMessageBox.Yes:
                 return
 
-            # ----------------------------------------
-            # 3) Ejecutar operación delegada TOTALMENTE en FileService
-            # ----------------------------------------
-            try:
-                self.controller.quitar_asignacion(numero, borrar_qxp=borrar_qxp)
-                self._despues_de_cambio_estado(numero)
-                self.colorear_paginas()
-            except Exception as e:
-                QMessageBox.critical(self, "Quitar asignación", str(e))
+        # ----------------------------------------
+        # 2) Armar mensaje según si existe QXP
+        # ----------------------------------------
+        if qxp_real and qxp_real.exists():
+            msg = (
+                "Se eliminará el archivo de Quark:\n\n"
+                f"{qxp_real.name}\n\n"
+                "¿Deseás continuar?"
+            )
+            borrar_qxp = True
+        else:
+            msg = "¿Seguro que querés quitar la asignación? (El TXT queda en materiales)"
+            borrar_qxp = False
+
+        resp = QMessageBox.question(
+            self,
+            "Quitar asignación",
+            msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
             return
+
+        # ----------------------------------------
+        # 3) Ejecutar operación delegada TOTALMENTE en FileService
+        # ----------------------------------------
+        try:
+            self.controller.quitar_asignacion(numero, borrar_qxp=borrar_qxp)
+            self._despues_de_cambio_estado(numero)
+            self.colorear_paginas()
+        except Exception as e:
+            QMessageBox.critical(self, "Quitar asignación", str(e))
 
 
 

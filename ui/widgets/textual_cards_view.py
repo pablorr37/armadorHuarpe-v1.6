@@ -72,6 +72,29 @@ class TextualCardsView(QWidget):
             })
         self.refresh()
 
+    def reanalizar_preservando(self, texts: list[str]):
+        """Re-detecta candidatos PRESERVANDO los seleccionados actuales (con su
+        nombre/cargo/foto): un Re-analizar no debe vaciar en silencio la selección
+        que después se propaga al JSON del pegado. Emite `changed`."""
+        previos = [dict(c) for c in self.selected_items()]
+        self.set_candidates(texts)
+        for prev in previos:
+            hit = next((c for c in self._candidates
+                        if not c["removed"] and c["text"] == prev["text"]), None)
+            if hit is None:
+                # El candidato ya no aparece en la detección: se conserva igual.
+                self._candidates.append(dict(prev))
+            else:
+                hit.update({
+                    "selected": True,
+                    "con_foto": prev.get("con_foto", False),
+                    "orador_nombre": prev.get("orador_nombre", ""),
+                    "orador_cargo": prev.get("orador_cargo", ""),
+                    "foto": prev.get("foto"),
+                })
+        self.refresh()
+        self.changed.emit()
+
     def clear(self):
         self._candidates = []
         self.refresh()
@@ -226,3 +249,6 @@ class TextualCardsView(QWidget):
                     "foto": {"path": foto_path, "epigrafe": ""} if (con_foto_tipo and i == 1 and foto_path) else None,
                 })
         self.refresh()
+        # Notificar la restauración: dispara highlight/deducción/alerta en el editor
+        # (antes el silencio dejaba los textuales cargados pero sin resaltar).
+        self.changed.emit()

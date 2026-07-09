@@ -2155,12 +2155,14 @@ class FileService:
         return self.buscar_qxp_por_numero(base, numero)
 
 
-    def mejor_qxp_para_pegar(self, numero: int) -> Optional[Path]:
-        """QXP más adelantado por estado (para abrir y pegar). Nunca devuelve PDF/TXT.
+    def qxp_mejor_ubicado(self, numero: int) -> Optional[Path]:
+        """Resolver CANÓNICO del QXP más adelantado por estado. Lo usan abrir Quark,
+        pegar en Quark, doble clic y Enter — todos abren SIEMPRE la misma versión.
 
         Prioridad: a pdf → mandar → final → base numérico ('NN.qxp', el mismo archivo
-        que avanza el Mover) → materiales/Pnn. 'materiales/Pnn' es el control del primer
-        armado y es el último recurso: solo se abre si no hay nada más adelantado.
+        que avanza el Mover; la convención 'Pag NN' ya no existe) → materiales/Pnn.
+        'materiales/Pnn' es el borrador del primer armado y es el último recurso:
+        solo se abre si no hay nada más adelantado.
         """
         return (
             self.find_qxp_apdf(numero)
@@ -2169,6 +2171,10 @@ class FileService:
             or self.find_qxp_base_numerico(numero)
             or self.find_qxp_en_materiales(numero)
         )
+
+    def mejor_qxp_para_pegar(self, numero: int) -> Optional[Path]:
+        """QXP más adelantado (para pegar). Delegado al resolver canónico."""
+        return self.qxp_mejor_ubicado(numero)
 
 
 

@@ -1013,6 +1013,49 @@ class EditorNotaWindow(QMainWindow):
         self._btn_sel_numero, self._sel_numero_row = self._crear_sel_manual_ui(lay_num, "numero")
         lay_num.addStretch(1)
 
+        # Tab Contar caracteres — selección acumulativa de fragmentos del cuerpo para
+        # saber cuántos caracteres (con espacios) tiene lo seleccionado / lo no seleccionado
+        # y compararlos contra el límite de la maqueta (hasta dónde y qué cortar).
+        self._tab_fragmentos = QWidget()
+        lay_fr = QVBoxLayout(self._tab_fragmentos)
+        lay_fr.setContentsMargins(4, 4, 4, 4)
+        lay_fr.setSpacing(6)
+
+        lbl_fr_desc = QLabel("Seleccioná fragmentos del cuerpo y sumá sus caracteres. "
+                             "Las selecciones se acumulan (no se cuentan dos veces).")
+        lbl_fr_desc.setWordWrap(True)
+        lbl_fr_desc.setStyleSheet("color: rgba(255,255,255,0.45); font-size: 11px;")
+        lay_fr.addWidget(lbl_fr_desc)
+
+        self._lbl_frag_sel = QLabel("Seleccionado: 0")
+        self._lbl_frag_no_sel = QLabel("No seleccionado: 0")
+        self._lbl_frag_limite = QLabel("Límite maqueta: —")
+        for _l in (self._lbl_frag_sel, self._lbl_frag_no_sel, self._lbl_frag_limite):
+            _l.setStyleSheet("font-size: 13px; color: #e2e8f0;")
+            lay_fr.addWidget(_l)
+
+        self._frag_scroll = QScrollArea()
+        self._frag_scroll.setWidgetResizable(True)
+        self._frag_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._frag_container = QWidget()
+        self._frag_lay = QVBoxLayout(self._frag_container)
+        self._frag_lay.setContentsMargins(2, 2, 2, 2)
+        self._frag_lay.setSpacing(4)
+        self._frag_lay.addStretch(1)
+        self._frag_scroll.setWidget(self._frag_container)
+        lay_fr.addWidget(self._frag_scroll, 1)
+
+        self._btn_frag_limpiar = QPushButton("Limpiar todo")
+        self._btn_frag_limpiar.setCursor(Qt.PointingHandCursor)
+        self._btn_frag_limpiar.clicked.connect(self._on_frag_limpiar)
+        lay_fr.addWidget(self._btn_frag_limpiar)
+
+        self._btn_sel_frag, self._sel_frag_row = self._crear_sel_manual_ui(
+            lay_fr, "fragmento", toggle_text="Selección de fragmentos",
+            ok_text="Agregar selección", cancel_text="Terminar")
+
+        self._frag_ranges: list = []   # rangos (start, end) fusionados del documento
+
         # Tab Corrección ortográfica
         self._tab_corr = QWidget()
         lay_corr = QVBoxLayout(self._tab_corr)
@@ -1056,7 +1099,10 @@ class EditorNotaWindow(QMainWindow):
         self._right_tabs.addTab(self._tab_textuales, "Textuales")
         self._right_tabs.addTab(self._tab_dato, "Dato")
         self._right_tabs.addTab(self._tab_numero, "Número")
+        self._right_tabs.addTab(self._tab_fragmentos, "Contar caracteres")
         self._right_tabs.addTab(self._tab_corr, "Corrección")
+        # Si las tabs no entran en el ancho, el QTabBar muestra flechas ‹ › para navegar.
+        self._right_tabs.tabBar().setUsesScrollButtons(True)
 
         # Señales
         self._cb_textual_tipo.currentTextChanged.connect(self._on_textual_tipo_changed)
@@ -1395,6 +1441,12 @@ class EditorNotaWindow(QMainWindow):
         txt = self._stories[0].ed_cuerpo.toPlainText()
         if self._hl_cuerpo is not None:
             self._hl_cuerpo.schedule_check(txt)
+        # Editar el cuerpo corre los rangos de los fragmentos → se reinician (con aviso).
+        if getattr(self, "_frag_ranges", None):
+            self._frag_ranges = []
+            self._refrescar_fragmentos_ui()
+            self._lbl_frag_limite.setText(
+                "Las selecciones se reinician al editar el cuerpo.")
 
     # ------------------------------------------------------------------
     # Swap
@@ -1605,19 +1657,27 @@ class EditorNotaWindow(QMainWindow):
         tipo = tipo_map.get(tipo_label)
         textual = None
         if tipo:
-            selected = self._textual_cards.selected_items()
-            textual = {"tipo": tipo}
-            for i, item in enumerate(selected[:3], 1):
-                textual[f"texto{i}"] = item.get("text", "")
-                textual[f"nombre{i}"] = item.get("orador_nombre", "")
-                raw_cargo = item.get("orador_cargo", "").strip()
-                textual[f"cargo{i}"] = (" " + raw_cargo) if raw_cargo else ""
-            if tipo in ("con_foto", "con_foto_xl") and selected:
-                foto_info = selected[0].get("foto") or {}
-                foto_src = foto_info.get("path", "")
-                textual["foto"] = self._copy_foto_textual(foto_src, txt_path) if foto_src else None
+            # Solo slots con texto real: un tipo elegido SIN textuales seleccionados NO se
+            # propaga (el script pegaría "" y dejaría los boxes de Quark editados y EN BLANCO
+            # — bug reportado). Ver también la alerta bloqueante en _estado_alerta_textuales.
+            selected = [it for it in self._textual_cards.selected_items()
+                        if (it.get("text") or "").strip()]
+            if selected:
+                textual = {"tipo": tipo}
+                for i, item in enumerate(selected[:3], 1):
+                    textual[f"texto{i}"] = item.get("text", "")
+                    textual[f"nombre{i}"] = item.get("orador_nombre", "")
+                    raw_cargo = item.get("orador_cargo", "").strip()
+                    textual[f"cargo{i}"] = (" " + raw_cargo) if raw_cargo else ""
+                if tipo in ("con_foto", "con_foto_xl"):
+                    foto_info = selected[0].get("foto") or {}
+                    foto_src = foto_info.get("path", "")
+                    textual["foto"] = self._copy_foto_textual(foto_src, txt_path) if foto_src else None
+                else:
+                    textual["foto"] = None
             else:
-                textual["foto"] = None
+                _log.warning("[EDITOR] P%02d: tipo de textual '%s' sin textuales seleccionados"
+                             " → no se propaga al JSON.", self.numero, tipo)
 
         # Dato
         dato = None
@@ -1841,34 +1901,56 @@ class EditorNotaWindow(QMainWindow):
     # Resaltado en cuerpo y overlay de flecha
     # ------------------------------------------------------------------
 
+    # Normalización 1:1 (misma longitud) para tolerar comillas tipográficas y el separador
+    # de párrafo de QTextEdit: los índices del match siguen valiendo sobre el texto original.
+    _TRANS_HIGHLIGHT = str.maketrans({
+        "“": '"', "”": '"', "«": '"', "»": '"',
+        "‘": "'", "’": "'",
+        " ": "\n",
+    })
+
+    def _buscar_en_cuerpo(self, body: str, text: str) -> int:
+        """find exacto; si falla, reintenta con ambos strings normalizados (comillas/saltos,
+        sustituciones 1:1 → el índice devuelto es válido sobre `body` original)."""
+        idx = body.find(text)
+        if idx >= 0:
+            return idx
+        return body.translate(self._TRANS_HIGHLIGHT).find(text.translate(self._TRANS_HIGHLIGHT))
+
     def _highlight_body_text(self, text: str, source: str = ""):
+        self._highlight_body_texts([text] if text else [], source)
+
+    def _highlight_body_texts(self, texts: list, source: str = ""):
+        """Resalta en el cuerpo TODOS los textos hallados (celeste). La flecha del overlay
+        apunta al primero. Los fallos de búsqueda son tolerantes a comillas tipográficas."""
         self._body_highlight_range = None
         self._highlight_source = source
         if not self._stories:
             return
         editor = self._stories[0].ed_cuerpo
-        if not text:
-            editor.setExtraSelections([])
-            self._update_arrow_overlay()
-            return
         body = editor.toPlainText()
-        idx = body.find(text)
-        if idx < 0:
-            editor.setExtraSelections([])
-            self._update_arrow_overlay()
-            return
-        self._body_highlight_range = (idx, idx + len(text))
         fmt = QTextCharFormat()
         fmt.setBackground(QColor(100, 180, 255, 55))
         fmt.setProperty(QTextCharFormat.OutlinePen, QColor(100, 180, 255, 200))
         from PyQt5.QtWidgets import QTextEdit
-        sel = QTextEdit.ExtraSelection()
-        sel.format = fmt
-        c = QTextCursor(editor.document())
-        c.setPosition(idx)
-        c.setPosition(idx + len(text), QTextCursor.KeepAnchor)
-        sel.cursor = c
-        editor.setExtraSelections([sel])
+        selections = []
+        for text in texts:
+            if not text:
+                continue
+            idx = self._buscar_en_cuerpo(body, text)
+            if idx < 0:
+                continue
+            if self._body_highlight_range is None:
+                self._body_highlight_range = (idx, idx + len(text))
+            sel = QTextEdit.ExtraSelection()
+            sel.format = fmt
+            c = QTextCursor(editor.document())
+            c.setPosition(idx)
+            c.setPosition(idx + len(text), QTextCursor.KeepAnchor)
+            sel.cursor = c
+            selections.append(sel)
+        self._resource_extra_sels = selections
+        self._aplicar_extra_selections()   # compone con el resaltado naranja de fragmentos
         self._update_arrow_overlay()
 
     def _update_arrow_overlay(self):
@@ -1931,10 +2013,7 @@ class EditorNotaWindow(QMainWindow):
 
     def _on_textual_selection_changed(self):
         sel = self._textual_cards.selected_items()
-        if sel:
-            self._highlight_body_text(sel[0].get("text", ""), source="textual")
-        else:
-            self._highlight_body_text("", source="textual")
+        self._highlight_body_texts([c.get("text", "") for c in sel], source="textual")
         self._refrescar_alerta_textuales()
 
     # ------------------------------------------------------------------
@@ -1948,9 +2027,13 @@ class EditorNotaWindow(QMainWindow):
         """None si está todo completo; si no, ('bloqueante'|'aviso', mensaje).
         Los bloqueantes impiden 'Guardar para armar' y 'armado automático' (no el guardado)."""
         sel = self._textual_cards.selected_items()
-        if not sel:
-            return None
         label = self._cb_textual_tipo.currentText()
+        if not sel:
+            # Espejo del caso "seleccionados sin tipo": un tipo elegido SIN textuales no se
+            # propaga al pegado (quedarían boxes en blanco) → alertar y bloquear el armado.
+            if label != "—":
+                return ("bloqueante", "Selecciona los textuales para el tipo elegido")
+            return None
         if label == "—":
             return ("bloqueante", "Selecciona el tipo de textual")
         if any(not (c.get("orador_nombre") or "").strip()
@@ -1979,6 +2062,9 @@ class EditorNotaWindow(QMainWindow):
         idx = self._idx_tab_textuales()
         if nuevo != idx and self._right_tabs.alert_bar.has_alert(idx):
             self._right_tabs.alert_bar.shake(idx)
+        # Al entrar a "Contar caracteres", refrescar conteos (el límite pudo cambiar).
+        if self._right_tabs.widget(nuevo) is getattr(self, "_tab_fragmentos", None):
+            self._actualizar_conteo_fragmentos()
 
     def _bloqueo_textuales(self) -> bool:
         """True si hay alerta bloqueante: enfoca la pestaña, sacude y avisa."""
@@ -2031,18 +2117,19 @@ class EditorNotaWindow(QMainWindow):
                         self._resist_acc = 0
         return super().eventFilter(obj, ev)
 
-    def _crear_sel_manual_ui(self, lay, mode: str):
-        """Botón 'Selección manual en texto' + fila Aceptar/Cancelar (mismo patrón que
-        Textuales) para las pestañas Dato y Número. Devuelve (btn_toggle, row)."""
-        btn = QPushButton("Selección manual en texto")
+    def _crear_sel_manual_ui(self, lay, mode: str, toggle_text: str = "Selección manual en texto",
+                             ok_text: str = "Aceptar", cancel_text: str = "Cancelar"):
+        """Botón toggle + fila Aceptar/Cancelar (mismo patrón que Textuales) para las
+        pestañas Dato, Número y Contar caracteres. Devuelve (btn_toggle, row)."""
+        btn = QPushButton(toggle_text)
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
         lay.addWidget(btn)
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
-        ok = QPushButton("Aceptar")
-        ko = QPushButton("Cancelar")
+        ok = QPushButton(ok_text)
+        ko = QPushButton(cancel_text)
         ok.setCursor(Qt.PointingHandCursor)
         ko.setCursor(Qt.PointingHandCursor)
         ok.setStyleSheet(
@@ -2065,11 +2152,12 @@ class EditorNotaWindow(QMainWindow):
         return btn, row
 
     def _sel_manual_ctrl(self) -> dict:
-        """mode -> (botón toggle, fila aceptar/cancelar) de los 3 modos de selección manual."""
+        """mode -> (botón toggle, fila aceptar/cancelar) de los 4 modos de selección manual."""
         return {
             "textual": (self._btn_sel_textual, self._sel_textual_row),
             "dato": (self._btn_sel_dato, self._sel_dato_row),
             "numero": (self._btn_sel_numero, self._sel_numero_row),
+            "fragmento": (self._btn_sel_frag, self._sel_frag_row),
         }
 
     def _on_sel_mode_toggled(self, mode: str, on: bool):
@@ -2107,9 +2195,17 @@ class EditorNotaWindow(QMainWindow):
     def _on_sel_mode_accept(self, mode: str):
         if not self._stories:
             return
-        text = self._stories[0].ed_cuerpo.textCursor().selectedText().strip()
+        cursor = self._stories[0].ed_cuerpo.textCursor()
+        text = cursor.selectedText().strip()
         text = text.replace("\u2029", "\n")   # separador de párrafo de QTextEdit
         btn, _row = self._sel_manual_ctrl()[mode]
+        if mode == "fragmento":
+            # Acumulativo: agrega el rango y MANTIENE el modo activo para seguir sumando.
+            if cursor.hasSelection():
+                self._agregar_fragmento(cursor.selectionStart(), cursor.selectionEnd())
+                cursor.clearSelection()
+                self._stories[0].ed_cuerpo.setTextCursor(cursor)
+            return
         if text:
             if mode == "textual":
                 self._textual_cards.add_preselected([text])
@@ -2150,6 +2246,127 @@ class EditorNotaWindow(QMainWindow):
                 self._numero_card.set_selected(True)
                 self._on_numero_card_toggled()
             self._recalcular_deduccion()
+
+    # ------------------------------------------------------------------
+    # Contar caracteres: fragmentos acumulativos del cuerpo
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fusionar_rangos(ranges: list) -> list:
+        """Fusiona rangos (start, end) solapados o adyacentes — no se cuenta dos veces."""
+        out: list = []
+        for s, e in sorted(ranges):
+            if out and s <= out[-1][1]:
+                out[-1] = (out[-1][0], max(out[-1][1], e))
+            else:
+                out.append((s, e))
+        return out
+
+    @staticmethod
+    def _contar_chars(texto: str) -> int:
+        """Criterio del contador del cuerpo: caracteres CON espacios, sin saltos de línea."""
+        return len(texto.replace("\u2029", "").replace("\n", "").strip())
+
+    def _agregar_fragmento(self, start: int, end: int):
+        if end <= start:
+            return
+        self._frag_ranges = self._fusionar_rangos(self._frag_ranges + [(start, end)])
+        self._refrescar_fragmentos_ui()
+
+    def _on_frag_quitar(self, idx: int):
+        if 0 <= idx < len(self._frag_ranges):
+            del self._frag_ranges[idx]
+            self._refrescar_fragmentos_ui()
+
+    def _on_frag_limpiar(self):
+        if self._frag_ranges:
+            self._frag_ranges = []
+            self._refrescar_fragmentos_ui()
+
+    def _refrescar_fragmentos_ui(self):
+        """Reconstruye las cards de fragmentos, los contadores y el resaltado naranja."""
+        # Cards
+        while self._frag_lay.count() > 1:
+            item = self._frag_lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        body = self._stories[0].ed_cuerpo.toPlainText() if self._stories else ""
+        for i, (s, e) in enumerate(self._frag_ranges):
+            frag = body[s:e]
+            preview = frag.strip().replace("\u2029", " ").replace("\n", " ")
+            if len(preview) > 60:
+                preview = preview[:57] + "…"
+            fila = QWidget()
+            fl = QHBoxLayout(fila)
+            fl.setContentsMargins(4, 2, 4, 2)
+            lbl = QLabel(f"{self._contar_chars(frag)} — {preview}")
+            lbl.setStyleSheet("color: rgba(255,255,255,0.75); font-size: 11px;")
+            lbl.setWordWrap(True)
+            fl.addWidget(lbl, 1)
+            btn_x = QPushButton("✕")
+            btn_x.setFixedSize(20, 20)
+            btn_x.setCursor(Qt.PointingHandCursor)
+            btn_x.setStyleSheet(
+                "QPushButton { background: rgba(230,120,60,0.18); color: #e87844;"
+                " border: 1px solid rgba(230,120,60,0.4); border-radius: 4px; font-size: 10px; }"
+                " QPushButton:hover { background: rgba(230,120,60,0.35); }")
+            btn_x.clicked.connect(lambda _=False, i=i: self._on_frag_quitar(i))
+            fl.addWidget(btn_x)
+            self._frag_lay.insertWidget(self._frag_lay.count() - 1, fila)
+
+        self._actualizar_conteo_fragmentos()
+        self._aplicar_extra_selections()
+
+    def _actualizar_conteo_fragmentos(self):
+        """(a) chars de la selección, (b) chars de lo no seleccionado, (c) vs límite maqueta."""
+        if not self._stories:
+            return
+        panel = self._stories[0]
+        body = panel.ed_cuerpo.toPlainText()
+        total = self._contar_chars(body)
+        seleccionado = sum(self._contar_chars(body[s:e]) for s, e in self._frag_ranges)
+        no_seleccionado = max(0, total - seleccionado)
+        limite = panel.limite_efectivo_cuerpo()
+
+        def _pintar(lbl, texto, n):
+            if limite > 0:
+                color = "#5abc8a" if n <= limite else "#ff6b6b"
+            else:
+                color = "#e2e8f0"
+            lbl.setText(texto)
+            lbl.setStyleSheet(f"font-size: 13px; color: {color};")
+
+        _pintar(self._lbl_frag_sel, f"Seleccionado: {seleccionado}", seleccionado)
+        _pintar(self._lbl_frag_no_sel, f"No seleccionado: {no_seleccionado}", no_seleccionado)
+        self._lbl_frag_limite.setText(
+            f"Límite maqueta: {limite}" if limite > 0 else "Límite maqueta: sin límite")
+        self._lbl_frag_limite.setStyleSheet("font-size: 13px; color: #e2e8f0;")
+
+    def _frag_extra_selections(self, editor):
+        """ExtraSelections NARANJAS de los fragmentos acumulados."""
+        from PyQt5.QtWidgets import QTextEdit
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(235, 140, 60, 70))
+        fmt.setProperty(QTextCharFormat.OutlinePen, QColor(235, 140, 60, 200))
+        sels = []
+        for s, e in self._frag_ranges:
+            sel = QTextEdit.ExtraSelection()
+            sel.format = fmt
+            c = QTextCursor(editor.document())
+            c.setPosition(s)
+            c.setPosition(e, QTextCursor.KeepAnchor)
+            sel.cursor = c
+            sels.append(sel)
+        return sels
+
+    def _aplicar_extra_selections(self):
+        """Compone en una sola lista el highlight celeste de recursos + naranja de fragmentos."""
+        if not self._stories:
+            return
+        editor = self._stories[0].ed_cuerpo
+        recursos = list(getattr(self, "_resource_extra_sels", []) or [])
+        editor.setExtraSelections(recursos + self._frag_extra_selections(editor))
 
     # ------------------------------------------------------------------
     # Corrección: acciones globales
@@ -2284,11 +2501,15 @@ class EditorNotaWindow(QMainWindow):
         c.insertText(new_word)
 
     def _on_detect_textuales(self):
+        """Re-analizar: re-detecta candidatos PRESERVANDO la selección y los datos ya
+        cargados (nombre/cargo/foto). Antes `set_candidates` borraba todo en silencio →
+        el usuario guardaba con el tipo elegido y 0 seleccionados → los boxes de Quark
+        se editaban con texto vacío (bug 'textual en blanco')."""
         if not self._stories:
             return
         body = self._stories[0].ed_cuerpo.toPlainText()
         cands = self._detector.detect(body)
-        self._textual_cards.set_candidates([c.text for c in cands])
+        self._textual_cards.reanalizar_preservando([c.text for c in cands])
         self._right_tabs.setCurrentWidget(self._tab_textuales)
 
     def _show_spell_menu(self, editor, highlighter, pos):
@@ -2521,6 +2742,14 @@ class EditorNotaWindow(QMainWindow):
                 background: rgba(231,136,95,0.20);
                 color: #e7885f;
             }}
+            /* Flechas ‹ › del tab bar cuando las pestañas no entran en el ancho. */
+            QTabBar QToolButton {{
+                background: rgba(255,255,255,0.10);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 4px;
+            }}
+            QTabBar QToolButton:hover {{ background: rgba(231,136,95,0.35); }}
+            QTabBar QToolButton:disabled {{ background: rgba(255,255,255,0.03); }}
             QFrame {{
                 border: 1px solid rgba(255,255,255,0.10);
                 background: rgba(255,255,255,0.04);

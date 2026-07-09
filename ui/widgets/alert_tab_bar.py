@@ -98,9 +98,30 @@ class AlertTabBar(QTabBar):
 
 
 class AlertTabWidget(QTabWidget):
-    """QTabWidget con AlertTabBar instalado. Exponer `alert_bar` para set_alert/shake."""
+    """QTabWidget con AlertTabBar instalado. Exponer `alert_bar` para set_alert/shake.
+
+    Los labels con espacios (p. ej. "Contar caracteres") pasan a dos líneas (wordwrap)
+    cuando el tab bar no entra en el ancho, y vuelven a una cuando sobra lugar."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.alert_bar = AlertTabBar(self)
         self.setTabBar(self.alert_bar)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._ajustar_labels_largos()
+
+    def _ajustar_labels_largos(self):
+        bar = self.alert_bar
+        for i in range(bar.count()):
+            actual = bar.tabText(i)
+            plano = actual.replace("\n", " ")
+            if " " not in plano:
+                continue
+            envuelto = "\n" in actual
+            if not envuelto and bar.sizeHint().width() > self.width():
+                bar.setTabText(i, plano.replace(" ", "\n", 1))
+            elif envuelto and bar.sizeHint().width() + 60 < self.width():
+                # Margen anti-oscilación: desenvuelve solo con lugar de sobra.
+                bar.setTabText(i, plano)

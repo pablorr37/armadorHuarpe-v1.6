@@ -482,24 +482,24 @@ class StoryPanel(QWidget):
         self._update_cuerpo_counter()
         self.textChanged.emit()
 
+    def limite_efectivo_cuerpo(self) -> int:
+        """Límite efectivo del cuerpo (0 = sin límite): cuerpo_limit − bajada − firma −
+        deducción externa − intertítulos (## → una línea extra cada uno). Fuente única de
+        la fórmula: la usan el contador del cuerpo y el tab 'Contar caracteres'."""
+        if self._cuerpo_box_limit <= 0:
+            return 0
+        raw = self.ed_cuerpo.toPlainText()
+        n_inter = sum(1 for ln in raw.splitlines() if ln.strip().startswith("##"))
+        bajada_len = len(self.ed_bajada.toPlainText().strip())
+        firma_ded = self._firma_deduccion if self.chk_firma.isChecked() else 0
+        return max(0, self._cuerpo_box_limit - bajada_len - firma_ded
+                   - self._deduction_external - n_inter * self._intertitulo_deduccion)
+
     def _update_cuerpo_counter(self):
-        """Recalcula el límite disponible para el cuerpo descontando bajada, firma,
-        recursos externos e intertítulos (## → una línea extra cada uno)."""
+        """Recalcula el límite disponible para el cuerpo (ver limite_efectivo_cuerpo)."""
         raw = self.ed_cuerpo.toPlainText()
         cuerpo_text = raw.replace('\n', '')
-        # #7 — contar intertítulos (líneas cuyo texto empieza con ##) → descuento.
-        n_inter = sum(1 for ln in raw.splitlines() if ln.strip().startswith("##"))
-        inter_ded = n_inter * self._intertitulo_deduccion
-        if self._cuerpo_box_limit <= 0:
-            self.cnt_cuerpo.set_limit(0)
-            self.cnt_cuerpo.update_count(cuerpo_text)
-            self._refresh_cuerpo_style(self.cnt_cuerpo.state)
-            return
-        bajada_len = len(self.ed_bajada.toPlainText().strip())
-        firma_ded  = self._firma_deduccion if self.chk_firma.isChecked() else 0
-        effective  = max(0, self._cuerpo_box_limit - bajada_len - firma_ded
-                         - self._deduction_external - inter_ded)
-        self.cnt_cuerpo.set_limit(effective)
+        self.cnt_cuerpo.set_limit(self.limite_efectivo_cuerpo())
         self.cnt_cuerpo.update_count(cuerpo_text)
         self._refresh_cuerpo_style(self.cnt_cuerpo.state)
 
