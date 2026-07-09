@@ -1187,16 +1187,18 @@ class ArmadorController:
             pag.aviso_half   = bool(entry.get("aviso_half",   False))
             pag.aviso_footer = bool(entry.get("aviso_footer", False))
             pag.aviso_robapagina = bool(entry.get("aviso_robapagina", False))
+            pag.aviso_doblemedia = bool(entry.get("aviso_doblemedia", False))
             pag.aviso_nombre = (entry.get("aviso_nombre") or "").strip()
+            pag.aviso_nombre2 = (entry.get("aviso_nombre2") or "").strip()
 
             # Si la página ya no tiene aviso (p.ej. al cambiar de edición), limpiar el
             # pixmap cacheado para que no persista el aviso de la edición anterior.
             if not (pag.aviso_full or pag.aviso_half or pag.aviso_footer
-                    or pag.aviso_robapagina) or not pag.aviso_nombre:
+                    or pag.aviso_robapagina or pag.aviso_doblemedia) or not pag.aviso_nombre:
                 pag.aviso_pixmap = None
                 pag.aviso_mtime = None
-                if hasattr(pag, "aviso_path"):
-                    pag.aviso_path = None
+            if not pag.aviso_doblemedia or not pag.aviso_nombre2:
+                pag.aviso_pixmap2 = None
 
             # Foto y título de tapa
             pag.tapa_foto = bool(entry.get("tapa_foto", False))
@@ -1739,14 +1741,18 @@ class ArmadorController:
         comp = {"seccion": "", "fecha": "", "textual": None, "textual_cargo": "",
                 "textual_nombre": "", "dato": False, "numero": False, "foto_tipo": "",
                 "foto_cant": 0, "foto_nombres": [], "firma": False, "firma_nombre": "",
-                "aviso": "", "aviso_nombre": "", "aviso_tipo": "", "qr": False}
+                "aviso": "", "aviso_nombre": "", "aviso_nombre2": "", "aviso_tipo": "",
+                "qr": False}
         try:
             entry = self.file_service.read_page_entry(numero)
             comp["seccion"] = (entry.get("seccion") or "").strip()
             # --- Aviso (nombre + tipo) ---
             aviso_nombre = (entry.get("aviso_nombre") or "").strip()
+            aviso_nombre2 = (entry.get("aviso_nombre2") or "").strip()
             if entry.get("aviso_full"):
                 comp["aviso_tipo"] = "full"
+            elif entry.get("aviso_doblemedia"):
+                comp["aviso_tipo"] = "doblemedia"
             elif entry.get("aviso_half"):
                 comp["aviso_tipo"] = "half"
             elif entry.get("aviso_footer"):
@@ -1754,9 +1760,11 @@ class ArmadorController:
             elif entry.get("aviso_robapagina"):
                 comp["aviso_tipo"] = "robapagina"
             comp["aviso_nombre"] = aviso_nombre
+            comp["aviso_nombre2"] = aviso_nombre2
             if aviso_nombre:
                 _label = {"full": "Completa", "half": "Media", "footer": "Pie",
-                          "robapagina": "Robapágina"}.get(comp["aviso_tipo"], "")
+                          "robapagina": "Robapágina",
+                          "doblemedia": "Doble media"}.get(comp["aviso_tipo"], "")
                 comp["aviso"] = f"{aviso_nombre} ({_label})" if _label else aviso_nombre
             # --- Fecha de edición ---
             try:
@@ -1849,6 +1857,7 @@ class ArmadorController:
             avisos = []
             try:
                 aviso_nombre = (entry.get("aviso_nombre") or "").strip()
+                aviso_nombre2 = (entry.get("aviso_nombre2") or "").strip()
                 if aviso_nombre:
                     if entry.get("aviso_footer"):
                         tipo = "pie"
@@ -1858,6 +1867,8 @@ class ArmadorController:
                         tipo = "completa"
                     elif entry.get("aviso_robapagina"):
                         tipo = "robapagina"
+                    elif entry.get("aviso_doblemedia"):
+                        tipo = "doblemedia"
                     else:
                         tipo = ""
 
@@ -1867,8 +1878,13 @@ class ArmadorController:
                         path_str = self._forzar_z_desde_unc(str(aviso_path))
                         _log.debug("path_str: %s", path_str)
                         from services.file_service import espacio_color as _espacio
-                        avisos.append({"tipo": tipo, "path": str(path_str),
-                                       "espacio": _espacio(aviso_path)})
+                        entry_aviso = {"tipo": tipo, "path": str(path_str),
+                                       "espacio": _espacio(aviso_path)}
+                        if tipo == "doblemedia" and aviso_nombre2:
+                            aviso_path2 = (self.file_service.material
+                                           / f"P{numero:02d}" / aviso_nombre2)
+                            entry_aviso["path2"] = str(self._forzar_z_desde_unc(str(aviso_path2)))
+                        avisos.append(entry_aviso)
             except Exception:
                 avisos = []
 
@@ -1996,6 +2012,7 @@ class ArmadorController:
                         entry.get("aviso_full"), entry.get("aviso_half"),
                         entry.get("aviso_footer"), entry.get("aviso_robapagina"),
                         seccion, self.rutas,
+                        aviso_doblemedia=entry.get("aviso_doblemedia"),
                     ) or ""
                     if nombre_maqueta:
                         mq_path = _get_maquetas_dir(self.rutas) / nombre_maqueta
@@ -2455,6 +2472,15 @@ class ArmadorController:
                 pag = self.gestor_paginas.obtener_pagina(numero)
                 if pag:
                     pag.aviso_full, pag.aviso_half, pag.aviso_footer = True, False, False
+                    pag.aviso_doblemedia = False
+                    pag.asignado = False
+
+            elif aviso and ("DOBLE" in aviso and "MEDIA" in aviso):
+                self.file_service.mark_aviso_doblemedia(numero, by=by)
+                pag = self.gestor_paginas.obtener_pagina(numero)
+                if pag:
+                    pag.aviso_full = pag.aviso_half = pag.aviso_footer = pag.aviso_robapagina = False
+                    pag.aviso_doblemedia = True
                     pag.asignado = False
 
             elif aviso and aviso.startswith("ROBA"):
@@ -2462,6 +2488,7 @@ class ArmadorController:
                 pag = self.gestor_paginas.obtener_pagina(numero)
                 if pag:
                     pag.aviso_full = pag.aviso_half = pag.aviso_footer = False
+                    pag.aviso_doblemedia = False
                     pag.aviso_robapagina = True
 
             elif aviso == "MEDIA":
@@ -2469,18 +2496,21 @@ class ArmadorController:
                 pag = self.gestor_paginas.obtener_pagina(numero)
                 if pag:
                     pag.aviso_full, pag.aviso_half, pag.aviso_footer = False, True, False
+                    pag.aviso_doblemedia = False
 
             elif aviso == "PIE":
                 self.file_service.mark_aviso_footer(numero, by=by)
                 pag = self.gestor_paginas.obtener_pagina(numero)
                 if pag:
                     pag.aviso_full, pag.aviso_half, pag.aviso_footer = False, False, True
+                    pag.aviso_doblemedia = False
 
             elif aviso and ("VAC" in aviso):
                 self.file_service.clear_avisos(numero, by=by)
                 pag = self.gestor_paginas.obtener_pagina(numero)
                 if pag:
                     pag.aviso_full = pag.aviso_half = pag.aviso_footer = pag.aviso_robapagina = False
+                    pag.aviso_doblemedia = False
 
             # ================================================================
             #  LINKS MÚLTIPLES: noticia principal + adicionales (a,b,c…)
@@ -2739,8 +2769,11 @@ class ArmadorController:
         """
         Lee un Excel de grilla de avisos sin estructura fija.
         Busca cualquier celda con 'PAGINA X' (regex) y toma de esa fila el nombre del aviso.
+        Si DOS filas comparten la misma página (TAMAÑO 'PAGINA' o 'MEDIA' — dos medias
+        páginas apiladas), se marca la página como aviso DOBLE MEDIA: la 1ª fila encontrada
+        va ARRIBA (aviso_nombre) y la 2ª ABAJO (aviso_nombre2).
         Devuelve:
-            mapping = { pagina(int) : aviso_nombre(str TAL CUAL) }
+            mapping = { pagina(int) : aviso_nombre(str TAL CUAL) }  (solo el/los principal(es))
             skipped = cantidad de filas ignoradas.
         """
         try:
@@ -2753,7 +2786,8 @@ class ArmadorController:
         wb = load_workbook(str(xlsx_path), data_only=True, read_only=True)
         ws = wb.active
 
-        mapping = {}
+        # Nombres de aviso encontrados por página, EN ORDEN de aparición en el Excel.
+        por_pagina: dict[int, list[str]] = {}
         skipped = 0
         re_pagina = re.compile(r"pagina\s*(\d+)", re.IGNORECASE)
 
@@ -2780,7 +2814,7 @@ class ArmadorController:
             if not numero:
                 skipped += 1
                 continue
-            
+
             # Aviso_nombre = primera celda "legible" distinta de PAGINA/tipo
             aviso_nombre = ""
             for celda in celdas:
@@ -2798,34 +2832,56 @@ class ArmadorController:
                 break
 
             if aviso_nombre:
-                mapping[numero] = aviso_nombre  # última ocurrencia gana
-                _log.info("P%02d → aviso_nombre='%s'", numero, aviso_nombre)
-
-                # Importar archivo real y persistir nombre con extensión en INI
-                try:
-                    self._sincronizar_rutas_en_file_service()
-
-                    destino = self.file_service.importar_aviso_inicial(
-                        numero,
-                        aviso_nombre,
-                        self.rutas.avisos_root,
-                        self.rutas.avisos2_root
-                    )
-
-                    # Si se pudo resolver/copiar (o ya existía), persistir el nombre REAL (con extensión)
-                    if destino:
-                        aviso_real = destino.name  # <-- incluye extensión
-                        self.file_service.write_page_entry(numero, aviso_nombre=aviso_real, by=self.usuario)
-                        mapping[numero] = aviso_real  # <-- clave: evita que on_cargar_avisos_excel lo pise sin extensión
-                        _log.info("P%02d → aviso_real='%s' (desde archivo encontrado)", numero, aviso_real)
-                    else:
-                        # Fallback: si no encontró archivo, al menos guarda lo del Excel (sin extensión)
-                        self.file_service.write_page_entry(numero, aviso_nombre=aviso_nombre, by=self.usuario)
-                        _log.warning("P%02d → no se encontró archivo; INI='%s' (sin extensión)", numero, aviso_nombre)
-                except Exception as e:
-                    _log.warning("No pude importar aviso inicial para P%02d: %s", numero, e)
+                por_pagina.setdefault(numero, []).append(aviso_nombre)
             else:
                 skipped += 1
+
+        mapping = {}
+        for numero, nombres in por_pagina.items():
+            es_doblemedia = len(nombres) >= 2
+            principal, secundario = nombres[0], (nombres[1] if es_doblemedia else "")
+            if es_doblemedia and len(nombres) > 2:
+                _log.warning(
+                    "P%02d: %d avisos comparten página; se toman los 2 primeros (doble media).",
+                    numero, len(nombres))
+
+            _log.info("P%02d → aviso_nombre='%s'%s", numero, principal,
+                      f" + aviso_nombre2='{secundario}' (doble media)" if es_doblemedia else "")
+
+            # Importar archivo(s) real(es) y persistir nombre(s) con extensión en INI
+            try:
+                self._sincronizar_rutas_en_file_service()
+
+                destino = self.file_service.importar_aviso_inicial(
+                    numero, principal, self.rutas.avisos_root, self.rutas.avisos2_root)
+                aviso_real = destino.name if destino else principal
+                if not destino:
+                    _log.warning("P%02d → no se encontró archivo; INI='%s' (sin extensión)",
+                                 numero, principal)
+
+                if es_doblemedia:
+                    destino2 = self.file_service.importar_aviso_inicial(
+                        numero, secundario, self.rutas.avisos_root, self.rutas.avisos2_root)
+                    aviso_real2 = destino2.name if destino2 else secundario
+                    if not destino2:
+                        _log.warning("P%02d → 2º aviso no encontrado; INI='%s' (sin extensión)",
+                                     numero, secundario)
+                    self.file_service.mark_aviso_doblemedia(numero, by=self.usuario)
+                    self.file_service.write_page_entry(
+                        numero, aviso_nombre=aviso_real, aviso_nombre2=aviso_real2,
+                        by=self.usuario)
+                    pag = self.gestor_paginas.obtener_pagina(numero)
+                    if pag:
+                        pag.aviso_full = pag.aviso_half = pag.aviso_footer = False
+                        pag.aviso_robapagina = False
+                        pag.aviso_doblemedia = True
+                else:
+                    self.file_service.write_page_entry(numero, aviso_nombre=aviso_real,
+                                                        by=self.usuario)
+
+                mapping[numero] = aviso_real
+            except Exception as e:
+                _log.warning("No pude importar aviso inicial para P%02d: %s", numero, e)
 
         _log.info("Importación de avisos completa: %d válidos, %d filas ignoradas", len(mapping), skipped)
         return mapping, skipped

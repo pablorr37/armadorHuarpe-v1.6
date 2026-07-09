@@ -43,8 +43,10 @@ _DESCUENTOS_TEXTUAL = [
 _DESCUENTOS_FIJOS = [
     ("firma_deduccion",      "Firma (si está habilitada)",  0, 999),
     ("qr_deduccion",         "QR",                          0, 999),
-    ("foto_3wide_deduccion", "Foto 3 col. wide",            0, 999),
+    ("foto_3wide_deduccion", "Foto 3 col.",                 0, 999),
     ("foto_3ancha_deduccion","Foto 3 col. ancha",           0, 999),
+    ("foto_4col_deduccion",  "Foto 4 col. (unificado)",     0, 9999),
+    ("sin_foto_bonus",       "Sin foto (bono liberado)",    0, 9999),
 ]
 
 _DESCUENTOS_DATO = [

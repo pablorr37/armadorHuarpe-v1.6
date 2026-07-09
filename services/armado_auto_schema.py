@@ -108,6 +108,8 @@ VALORES_DEFAULT = {
     # residual del src negativo. Las fotos usan 0.
     "deletes_recurso": "2",
     "foto_a": "129,574", "foto_al_wide": "69,467", "foto_al_ancha": "82,166",
+    # Foto a 4 columnas: A y Al propios (más ancha y más alta). Vacíos hasta calibrar.
+    "foto_a_4col": "", "foto_al_4col": "",
     "textual_x": "55,074", "textual_y": "148,5",
     "dato_x": "", "dato_y": "",
     "numero_x": "", "numero_y": "",
@@ -128,7 +130,8 @@ VALORES_EDITABLES = [
     ("numero_x", "Número X"), ("numero_y", "Número Y"),
     ("qr_x", "QR X"), ("qr_y", "QR Y"),
     ("foto_a", "Foto A (Ancho)"),
-    ("foto_al_wide", "Foto Al (wide)"), ("foto_al_ancha", "Foto Al (ancha)"),
+    ("foto_al_wide", "Foto Al (3 col)"), ("foto_al_ancha", "Foto Al (ancha)"),
+    ("foto_a_4col", "Foto A (4 col)"), ("foto_al_4col", "Foto Al (4 col)"),
 ]
 
 
@@ -138,14 +141,17 @@ def valor_default(clave: str) -> str:
 
 
 def foto3_variante(comp: dict):
-    """'wide' | 'ancha' | None según foto_tipo de la composición (3 columnas)."""
+    """'wide' | 'ancha' | '4col' | None según foto_tipo. Cubre el rename ('3 columnas' sin
+    'ancha' = ex '3 columnas wide') y el legacy con 'wide'. '2 columnas'/'Sin foto'/'' → None."""
     ft = ((comp or {}).get("foto_tipo") or "").lower()
-    if "3" not in ft:
+    if not ft or "sin" in ft or "2" in ft:
         return None
-    if "wide" in ft:
-        return "wide"
+    if "4" in ft:
+        return "4col"
     if "anch" in ft:
         return "ancha"
+    if "3" in ft or "wide" in ft:
+        return "wide"
     return None
 
 # Tipos de aviso (para calibrar una maqueta distinta por sección + aviso). El valor coincide
@@ -156,6 +162,7 @@ AVISO_TIPOS = [
     ("half", "Media"),
     ("footer", "Pie de página"),
     ("robapagina", "Robapágina"),
+    ("doblemedia", "Doble media"),
 ]
 
 
@@ -226,7 +233,5 @@ def recurso_activo(comp: dict, recurso: str) -> bool:
 
 
 def es_foto_3col_ancha(comp: dict) -> bool:
-    """True si foto_tipo indica '3 columnas ancha/wide' (alineado con foto_3ancha/3wide)."""
-    ft = (comp or {}).get("foto_tipo", "") or ""
-    ft = ft.lower()
-    return ("3" in ft) and ("anch" in ft or "wide" in ft)
+    """True si foto_tipo es una variante que el bot redimensiona (3 col / 3 ancha / 4 col)."""
+    return foto3_variante(comp) is not None

@@ -49,14 +49,17 @@ class TitleGridEditor(QWidget):
         return self._text
 
     def get_lines(self) -> list[str]:
-        """Devuelve lista de líneas (corte duro en cols) — para guardar/mostrar."""
+        """Devuelve lista de líneas (salto real o corte duro en cols) — para guardar/mostrar."""
         rs = self._row_starts
         result = []
         for row, start in enumerate(rs):
-            if row + 1 < len(rs):
-                result.append(self._text[start : rs[row + 1]])
-            else:
-                result.append(self._text[start:])
+            end = rs[row + 1] if row + 1 < len(rs) else len(self._text)
+            line = self._text[start:end]
+            if line.endswith("\n"):
+                line = line[:-1]
+            # Saltos embebidos (solo posibles en la última fila, por paste con más
+            # líneas que filas): no deben filtrarse al TXT.
+            result.append(line.replace("\n", " "))
         return result if result else [""]
 
     def update_dims(self, cols: int, rows: int) -> None:
@@ -91,15 +94,40 @@ class TitleGridEditor(QWidget):
     # -----------------------------------------------------------------------
 
     def _compute_row_starts(self, text: str) -> list[int]:
-        """Corte duro: cada fila ocupa exactamente cols caracteres."""
+        """Una fila termina en un salto real ('\\n') o al llegar a cols (corte duro).
+        Se limita a self.rows filas: en la última, el resto desborda horizontal (rojo)."""
         starts = [0]
-        pos = 0
-        for _ in range(self.rows - 1):
-            pos += self.cols
-            if pos >= len(text):
-                break
-            starts.append(pos)
+        col = 0
+        i = 0
+        n = len(text)
+        while i < n and len(starts) < self.rows:
+            ch = text[i]
+            if ch == "\n":
+                starts.append(i + 1)
+                col = 0
+            else:
+                col += 1
+                if col >= self.cols and i + 1 < n:
+                    if text[i + 1] == "\n":
+                        # El corte duro coincide con un salto real: consumirlo junto
+                        # (evita una fila vacía duplicada).
+                        starts.append(i + 2)
+                        i += 1
+                    else:
+                        starts.append(i + 1)
+                    col = 0
+            i += 1
         return starts
+
+    def _row_end(self, row: int) -> int:
+        """Fin (exclusivo) del contenido visible de la fila, sin contar su '\\n' final."""
+        rs = self._row_starts
+        if row + 1 < len(rs):
+            end = rs[row + 1]
+            if end > rs[row] and self._text[end - 1] == "\n":
+                end -= 1
+            return end
+        return len(self._text)
 
     def _cursor_row_col(self, cur: int) -> tuple[int, int]:
         """Convierte posición plana en (row, col) visual."""
@@ -113,9 +141,9 @@ class TitleGridEditor(QWidget):
         return row, cur - rs[row]
 
     def _cursor_from_cell(self, row: int, col: int) -> int:
-        """Convierte (row, col) visual en posición plana."""
+        """Convierte (row, col) visual en posición plana, acotada al contenido de la fila."""
         r = max(0, min(row, len(self._row_starts) - 1))
-        return self._row_starts[r] + col
+        return min(self._row_starts[r] + col, self._row_end(r))
 
     # -----------------------------------------------------------------------
     # Selección
@@ -281,8 +309,7 @@ class TitleGridEditor(QWidget):
             elif not shift:
                 self._sel_anchor = None
             row, _ = self._cursor_row_col(self._cursor)
-            rs = self._row_starts
-            self._cursor = rs[row + 1] if row + 1 < len(rs) else len(self._text)
+            self._cursor = self._row_end(row)
             self.update()
             return
 
@@ -344,22 +371,17 @@ class TitleGridEditor(QWidget):
                 self.update()
                 self.textChanged.emit()
             elif key == Qt.Key_V:
+                # Pegar conserva los saltos de línea (solo normaliza \r).
                 paste = QApplication.clipboard().text()
-                paste = paste.replace("\n", " ").replace("\r", "")
+                paste = paste.replace("\r\n", "\n").replace("\r", "\n")
                 self._insert_text(paste)
             return
 
-        # ── Enter — empuja el texto a la derecha del cursor a la línea siguiente ──
+        # ── Enter — salto de línea real (como un campo de texto de Quark) ──
         if key in (Qt.Key_Return, Qt.Key_Enter):
-            row, col = self._cursor_row_col(self._cursor)
-            if col > 0 and row < self.rows - 1:
-                spaces = " " * (self.cols - col)
-                self._push_undo()
-                self._text = self._text[:self._cursor] + spaces + self._text[self._cursor:]
-                self._cursor += len(spaces)
-                self._row_starts = self._compute_row_starts(self._text)
-                self.update()
-                self.textChanged.emit()
+            row, _col = self._cursor_row_col(self._cursor)
+            if row < self.rows - 1:
+                self._insert_text("\n")
             return
 
         if text and text.isprintable():
@@ -517,8 +539,10 @@ class TitleGridEditor(QWidget):
                 sy = int(padding + s_row * cell_h)
                 p.fillRect(sx, sy, int(cell_w), int(cell_h), _CLR_SEL)
 
-        # Caracteres
+        # Caracteres (los '\n' no se dibujan: solo marcan el fin de la fila)
         for i, ch in enumerate(self._text):
+            if ch == "\n":
+                continue
             row, col = self._char_display_pos(i)
             if col >= total_cols:
                 break
@@ -532,17 +556,19 @@ class TitleGridEditor(QWidget):
             p.setPen(QPen(clr))
             p.drawText(tx, ty, ch)
 
-        # Cursor — solo cuando el widget tiene foco
+        # Caret de inserción — línea vertical fina ENTRE caracteres (no un rectángulo
+        # sobre el siguiente): coincide con la edición real (Backspace borra a la izq.,
+        # escribir inserta en el punto), como un campo de texto de Quark.
         if has_focus:
             cur = max(0, min(len(self._text), self._cursor))
             cur_row, cur_col = self._cursor_row_col(cur)
-            if cur_col < total_cols:
+            if cur_col <= total_cols:
                 cx = int(padding + cur_col * cell_w)
                 cy = int(padding + cur_row * cell_h)
                 pen_cursor = QPen(_CLR_CURSOR)
                 pen_cursor.setWidth(2)
                 p.setPen(pen_cursor)
-                p.drawRect(cx, cy, int(cell_w), int(cell_h))
+                p.drawLine(cx, cy + 2, cx, cy + int(cell_h) - 2)
 
         # Borde de foco
         if has_focus:

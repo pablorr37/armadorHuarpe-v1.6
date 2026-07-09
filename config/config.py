@@ -88,6 +88,8 @@ class Config:
             "qr_deduccion":             "170",
             "foto_3wide_deduccion":     "450",
             "foto_3ancha_deduccion":    "625",
+            "foto_4col_deduccion":      "1600",  # costo unificado (incluye epígrafe más grande)
+            "sin_foto_bonus":           "945",   # chars liberados sin foto (foto 2 col + epígrafe)
             # Textuales — descuento base + penaliza a partir de N chars
             "textual_simple_base":        "400",
             "textual_simple_umbral":      "100",

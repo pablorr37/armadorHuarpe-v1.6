@@ -47,6 +47,7 @@ _AD_PREFIXES: dict[str, list[str]] = {
     "half":       ["media"],
     "footer":     ["pie"],
     "robapagina": ["roba"],
+    "doblemedia": ["doblemedia"],
     "none":       ["vacia"],
 }
 
@@ -147,14 +148,18 @@ def resolve_maqueta_name(
 
 def resolve_maqueta(aviso_full: bool, aviso_half: bool, aviso_footer: bool,
                     aviso_robapagina: bool, seccion: str,
-                    rutas: dict | None = None) -> Optional[str]:
+                    rutas: dict | None = None,
+                    aviso_doblemedia: bool = False) -> Optional[str]:
     """
     Resuelve el nombre de maqueta a partir de los flags de aviso de la página y
-    la sección. Mapea flags→tipo (completa/media/pie/roba/vacia) y delega en
-    resolve_maqueta_name (sección sin sufijo → {tipo}Generica.qxp).
+    la sección. Mapea flags→tipo (completa/media/pie/roba/doblemedia/vacia) y delega
+    en resolve_maqueta_name (sección sin sufijo → {tipo}Generica.qxp; doblemedia no
+    tiene variantes por sección → cae directo en el archivo plano 'dobleMedia.qxp').
     """
     if aviso_full:
         tipo = "completa"
+    elif aviso_doblemedia:
+        tipo = "doblemedia"
     elif aviso_half:
         tipo = "media"
     elif aviso_footer:
@@ -186,6 +191,8 @@ def get_templates_for_page(pagina) -> list[str]:
     # Determine valid ad prefixes
     if getattr(pagina, "aviso_full", False):
         ad_prefixes = _AD_PREFIXES["full"]
+    elif getattr(pagina, "aviso_doblemedia", False):
+        ad_prefixes = _AD_PREFIXES["doblemedia"]
     elif getattr(pagina, "aviso_half", False):
         ad_prefixes = _AD_PREFIXES["half"]
     elif getattr(pagina, "aviso_footer", False):

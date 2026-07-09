@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from PyQt5.QtCore import Qt, QObject, QEvent, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, QEvent, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QTextEdit,
     QComboBox, QCheckBox, QDialog, QDialogButtonBox, QPushButton,
@@ -202,9 +202,19 @@ class StoryPanel(QWidget):
         self._intertitulo_deduccion: int = mq.get("intertitulo_deduccion", 35)
         self._story_type: str = ""
 
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(12)
+
+        # Contenedor superior colapsable (volanta/título/bajada/firma/epígrafe): al hacer
+        # scroll hacia abajo se oculta animado y el cuerpo ocupa todo el panel.
+        self._upper = QWidget()
+        lay = QVBoxLayout(self._upper)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(16)
+        lay.setSpacing(12)
+        outer.addWidget(self._upper)
+        self._upper_collapsed = False
+        self._upper_anim = None
 
         # ── Volanta ──
         self.ed_volanta = QPlainTextEdit()
@@ -287,7 +297,9 @@ class StoryPanel(QWidget):
         self.ed_epigrafe.setPlaceholderText("Epígrafe de la foto principal...")
         self.cnt_epigrafe = CharCounter(mq.get("epigrafe_principal_limit", 120), 50, self.ed_epigrafe)
         self._block_epigrafe = FieldBlock("Epígrafe", _wrap(self.ed_epigrafe, self.cnt_epigrafe))
-        lay.addWidget(self._block_epigrafe)
+        # El epígrafe va FUERA del bloque colapsable: debe seguir visible cuando el
+        # colapso oculta volanta/título/bajada/firma (pantallas chicas, 1366×768).
+        outer.addWidget(self._block_epigrafe)
 
         # ── Cuerpo ──
         # QTextEdit (no QPlainTextEdit): QPlainTextEdit ignora el interlineado
@@ -329,11 +341,11 @@ class StoryPanel(QWidget):
         self._body_toolbar.changed.connect(self._on_body_toolbar_changed)
         cuerpo_sec_lay.addWidget(self._body_toolbar)
 
-        cuerpo_sec_lay.addWidget(self.ed_cuerpo)
+        cuerpo_sec_lay.addWidget(self.ed_cuerpo, 1)
         self._block_cuerpo = cuerpo_section
-        lay.addWidget(self._block_cuerpo)
+        outer.addWidget(self._block_cuerpo, 1)
 
-        lay.addStretch(1)
+        outer.addStretch(0)
 
         # Apply per-field font sizes from maqueta config
         self._apply_field_fonts(mq)
@@ -351,6 +363,32 @@ class StoryPanel(QWidget):
         self.chk_firma.toggled.connect(self._update_cuerpo_counter)
         self.ed_epigrafe.textChanged.connect(self._on_epigrafe_changed)
         self.ed_cuerpo.textChanged.connect(self._on_cuerpo_changed)
+
+    # ── Colapso animado del bloque superior (estilo app-bar) ──
+
+    def upper_collapsed(self) -> bool:
+        return self._upper_collapsed
+
+    def set_upper_collapsed(self, collapsed: bool):
+        """Oculta/muestra animado (InOutCubic, ~260 ms) volanta/título/bajada/firma/epígrafe
+        para que el cuerpo ocupe todo el panel."""
+        if collapsed == self._upper_collapsed:
+            return
+        self._upper_collapsed = collapsed
+        if self._upper_anim is not None:
+            self._upper_anim.stop()
+        inicio = self._upper.height()
+        fin = 0 if collapsed else self._upper.sizeHint().height()
+        anim = QPropertyAnimation(self._upper, b"maximumHeight", self)
+        anim.setDuration(260)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.setStartValue(inicio)
+        anim.setEndValue(fin)
+        if not collapsed:
+            # Al terminar de expandir, soltar el tope para que el layout respire normal.
+            anim.finished.connect(lambda: self._upper.setMaximumHeight(16777215))
+        anim.start()
+        self._upper_anim = anim
 
     # ── Font application ──
 

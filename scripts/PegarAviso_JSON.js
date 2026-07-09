@@ -180,7 +180,10 @@
         pie: ["Box1889", "Box1890", "Box1896"],
         media: ["Box1894", "Box1897", "Box1899"],
         robapagina: ["Box1897", "Box1903", "Box1904"],
-        completa: ["Box1911"]
+        completa: ["Box1911"],
+        // Doble media: dos medias páginas apiladas. El box superior es el mismo que
+        // el de "completa" (Box1911); el inferior es un box dedicado (Box1932).
+        doblemedia: { sup: "Box1911", inf: "Box1932" }
       },
       "cultura": {
         pie: ["Box1561", "Box1568"],
@@ -244,17 +247,30 @@
         var a = avisos[i] || {};
         var tipo = normalizar(a.tipo || "");
         var path = (a.path || "").trim();
-        var targets = (tipo === "completa") ? (conf.completa || []) : UNIVERSAL_AVISO;
 
-        for (var j = 0; j < targets.length; j++) {
-          var res = setImagenEnBox(targets[j], path);
-          if (res.ok) okCount++;
-          else fails.push(res);
+        if (tipo === "doblemedia") {
+          // Página entera de avisos: superior (Box1911, igual que "completa") +
+          // inferior (Box1932), cada uno con su propio archivo.
+          var dm = conf.doblemedia || AVISO_TARGETS.default.doblemedia;
+          var res1 = setImagenEnBox(dm.sup, path);
+          if (res1.ok) okCount++; else fails.push(res1);
+          var path2 = (a.path2 || "").trim();
+          if (path2) {
+            var res2 = setImagenEnBox(dm.inf, path2);
+            if (res2.ok) okCount++; else fails.push(res2);
+          }
+        } else {
+          var targets = (tipo === "completa") ? (conf.completa || []) : UNIVERSAL_AVISO;
+          for (var j = 0; j < targets.length; j++) {
+            var res = setImagenEnBox(targets[j], path);
+            if (res.ok) okCount++;
+            else fails.push(res);
+          }
         }
 
-        // El aviso COMPLETA lleva encabezado de folio + fecha (la página queda
-        // cubierta salvo esa franja superior).
-        if (tipo === "completa") {
+        // El aviso COMPLETA (o DOBLE MEDIA, que también cubre la página entera) lleva
+        // encabezado de folio + fecha (la página queda cubierta salvo esa franja superior).
+        if (tipo === "completa" || tipo === "doblemedia") {
           setTextoEnBox("Box366", numeroPagina + " | " + seccion.toUpperCase());
           setFecha("Box1183");
         }

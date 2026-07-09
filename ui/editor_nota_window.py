@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint, QThread, QPropertyAnimation
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint, QThread, QPropertyAnimation, QEvent
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QScrollArea, QLabel, QLineEdit, QPlainTextEdit,
@@ -774,15 +774,17 @@ class EditorNotaWindow(QMainWindow):
         self._left_header = QWidget()
         self._left_header.setObjectName("leftHeader")
         hdr_lay = QVBoxLayout(self._left_header)
-        hdr_lay.setContentsMargins(14, 14, 14, 8)
-        hdr_lay.setSpacing(8)
+        hdr_lay.setContentsMargins(14, 8, 14, 6)
+        hdr_lay.setSpacing(6)
 
-        self._lbl_page = QLabel(f"Página {self.numero}")
-        self._lbl_page.setProperty("pageTitle", True)
-        hdr_lay.addWidget(self._lbl_page)
-
+        # Fila 1 compacta: título de página + maqueta + noticias (antes eran 2 filas;
+        # el espacio ahorrado deja visible el epígrafe en pantallas 1366×768).
         maqueta_row = QHBoxLayout()
         maqueta_row.setSpacing(8)
+        self._lbl_page = QLabel(f"Página {self.numero}")
+        self._lbl_page.setProperty("pageTitle", True)
+        maqueta_row.addWidget(self._lbl_page)
+        maqueta_row.addSpacing(10)
         maqueta_row.addWidget(QLabel("Maqueta:"))
         self._cb_maqueta = QComboBox()
         try:
@@ -841,6 +843,9 @@ class EditorNotaWindow(QMainWindow):
 
         self._left_scroll.setWidget(left_container)
         left_panel_lay.addWidget(self._left_scroll, 1)
+        # Colapso del bloque superior: la rueda sobre el panel izquierdo lo gobierna.
+        self._resist_acc = 0
+        self._left_scroll.viewport().installEventFilter(self)
 
         # ── Pestañas de noticias ──
         self._story_tabs = QTabWidget()
@@ -853,7 +858,8 @@ class EditorNotaWindow(QMainWindow):
         self._left_lay.addWidget(self._btn_swap)
 
         # ── Panel derecho (tabs) ──
-        self._right_tabs = QTabWidget()
+        from ui.widgets.alert_tab_bar import AlertTabWidget
+        self._right_tabs = AlertTabWidget()
         self.split.addWidget(self._right_tabs)
         self.split.setStretchFactor(0, 3)
         self.split.setStretchFactor(1, 2)
@@ -867,7 +873,9 @@ class EditorNotaWindow(QMainWindow):
         foto_tipo_row = QHBoxLayout()
         foto_tipo_row.addWidget(QLabel("Tipo de foto:"))
         self._cb_foto_tipo = QComboBox()
-        self._cb_foto_tipo.addItems(["2 columnas", "3 columnas wide", "3 columnas ancha"])
+        self._cb_foto_tipo.addItems(
+            ["Sin foto", "2 columnas", "3 columnas", "3 columnas ancha", "4 columnas"])
+        self._cb_foto_tipo.setCurrentText("2 columnas")
         foto_tipo_row.addWidget(self._cb_foto_tipo)
         foto_tipo_row.addStretch(1)
         self._btn_agregar_foto = QPushButton("  Agregar foto")
@@ -976,6 +984,7 @@ class EditorNotaWindow(QMainWindow):
         self._dato_lay_cards.addStretch(1)
         self._dato_scroll.setWidget(self._dato_container)
         lay_dt.addWidget(self._dato_scroll, 1)
+        self._btn_sel_dato, self._sel_dato_row = self._crear_sel_manual_ui(lay_dt, "dato")
         lay_dt.addStretch(0)
 
         self._dato_cards: list[_DatoCard] = []
@@ -1001,6 +1010,7 @@ class EditorNotaWindow(QMainWindow):
         self._numero_card.toggled.connect(self._recalcular_deduccion)
         self._numero_card.toggled.connect(self._on_numero_card_toggled)
         lay_num.addWidget(self._numero_card)
+        self._btn_sel_numero, self._sel_numero_row = self._crear_sel_manual_ui(lay_num, "numero")
         lay_num.addStretch(1)
 
         # Tab Corrección ortográfica
@@ -1063,10 +1073,13 @@ class EditorNotaWindow(QMainWindow):
         self._sb_noticias.valueChanged.connect(self._on_story_count_changed)
         self._btn_add_all_dict.clicked.connect(self._on_add_all_to_dict)
         self._btn_ignore_all.clicked.connect(self._on_ignore_all)
-        self._btn_sel_textual.toggled.connect(self._on_sel_textual_toggled)
-        self._btn_sel_accept.clicked.connect(self._on_sel_textual_accept)
-        self._btn_sel_cancel.clicked.connect(self._on_sel_textual_cancel)
-        self._right_tabs.currentChanged.connect(lambda _: self._update_arrow_overlay())
+        self._btn_sel_textual.toggled.connect(
+            lambda on: self._on_sel_mode_toggled("textual", on))
+        self._btn_sel_accept.clicked.connect(
+            lambda: self._on_sel_mode_accept("textual"))
+        self._btn_sel_cancel.clicked.connect(
+            lambda: self._on_sel_mode_cancel("textual"))
+        self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
         sc = QShortcut(QKeySequence("Ctrl+S"), self)
         sc.activated.connect(self._on_guardar)
@@ -1089,6 +1102,8 @@ class EditorNotaWindow(QMainWindow):
         self._story_tabs.addTab(panel, label)
         self._stories.append(panel)
         panel.body_display_changed.connect(self._on_body_display_changed)
+        # La rueda dentro del cuerpo también gobierna el colapso del bloque superior.
+        panel.ed_cuerpo.viewport().installEventFilter(self)
 
         if story_index == 0:
             panel.ed_bajada.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1261,6 +1276,12 @@ class EditorNotaWindow(QMainWindow):
         self._sb_noticias.blockSignals(False)
         self._on_story_count_changed(story_count)
 
+        # Avisar si la página trae más de una noticia (tras mostrarse la ventana).
+        if story_count > 1:
+            QTimer.singleShot(0, lambda n=story_count: QMessageBox.information(
+                self, "Noticias asignadas",
+                f"Esta página tiene {n} noticias asignadas"))
+
         # Cargar cada carpeta en el panel = índice de su sufijo (rol)
         loaded_any = False
         for d in dirs:
@@ -1393,6 +1414,7 @@ class EditorNotaWindow(QMainWindow):
             "con foto": "con_foto", "con foto XL": "con_foto_xl",
         }
         self._textual_cards.set_tipo(tipo_map.get(label))
+        self._refrescar_alerta_textuales()
 
     def _on_qr_seleccionada(self, path) -> None:
         self._qr_path = path
@@ -1429,15 +1451,30 @@ class EditorNotaWindow(QMainWindow):
         if self._qr_path:
             total += self._mq.get("qr_deduccion", 170)
 
-        # Tipo de foto
+        # Tipo de foto. "4 columnas" es un costo unificado (incluye el epígrafe más grande);
+        # "Sin foto" BONIFICA: libera los caracteres de la foto 2 col + epígrafe.
         foto_tipo = self._cb_foto_tipo.currentText()
-        if foto_tipo == "3 columnas wide":
+        if foto_tipo == "3 columnas":
             total += self._mq.get("foto_3wide_deduccion", 450)
         elif foto_tipo == "3 columnas ancha":
             total += self._mq.get("foto_3ancha_deduccion", 625)
+        elif foto_tipo == "4 columnas":
+            total += self._mq.get("foto_4col_deduccion", 1600)
+        elif foto_tipo == "Sin foto":
+            total -= self._mq.get("sin_foto_bonus", 945)
+        self._aplicar_sin_foto_ui(foto_tipo == "Sin foto")
 
         for panel in self._stories:
             panel.set_external_deduction(total)
+
+    def _aplicar_sin_foto_ui(self, sin_foto: bool):
+        """'Sin foto' deshabilita el epígrafe de cada noticia y la carga de fotos de página."""
+        self._btn_agregar_foto.setEnabled(not sin_foto)
+        for panel in self._stories:
+            ed = getattr(panel, "ed_epigrafe", None)
+            if ed is not None:
+                ed.setEnabled(not sin_foto)
+                ed.setToolTip("Sin foto: el epígrafe no aplica" if sin_foto else "")
 
     def _on_numero_edit(self):
         d = self._numero_card.get_data()
@@ -1535,11 +1572,15 @@ class EditorNotaWindow(QMainWindow):
             QMessageBox.information(self, "Guardado", f"Nota(s) guardada(s):\n{names}")
 
     def _on_guardar_para_armar(self):
+        if self._bloqueo_textuales():   # coercitivo: textual incompleto no se arma
+            return
         if self._do_save():
             self.nota_guardada_para_armar.emit(self.numero)
             self.close()
 
     def _on_guardar_para_armado_bot(self):
+        if self._bloqueo_textuales():   # coercitivo: textual incompleto no se arma
+            return
         if self._do_save():
             self.nota_guardada_para_armado_bot.emit(self.numero)
             self.close()
@@ -1778,7 +1819,9 @@ class EditorNotaWindow(QMainWindow):
                 self._fotos_browser.set_qr_path(qr)
 
         # Tipo de foto
-        foto_tipo = data.get("foto_tipo", "2 columnas")
+        foto_tipo = (data.get("foto_tipo") or "2 columnas").strip()
+        if foto_tipo == "3 columnas wide":   # legacy: renombrado a "3 columnas"
+            foto_tipo = "3 columnas"
         idx = self._cb_foto_tipo.findText(foto_tipo)
         if idx >= 0:
             self._cb_foto_tipo.blockSignals(True)
@@ -1892,6 +1935,62 @@ class EditorNotaWindow(QMainWindow):
             self._highlight_body_text(sel[0].get("text", ""), source="textual")
         else:
             self._highlight_body_text("", source="textual")
+        self._refrescar_alerta_textuales()
+
+    # ------------------------------------------------------------------
+    # Alerta de la pestaña Textuales (ícono + borde naranja + tooltip + shake)
+    # ------------------------------------------------------------------
+
+    def _idx_tab_textuales(self) -> int:
+        return self._right_tabs.indexOf(self._tab_textuales)
+
+    def _estado_alerta_textuales(self):
+        """None si está todo completo; si no, ('bloqueante'|'aviso', mensaje).
+        Los bloqueantes impiden 'Guardar para armar' y 'armado automático' (no el guardado)."""
+        sel = self._textual_cards.selected_items()
+        if not sel:
+            return None
+        label = self._cb_textual_tipo.currentText()
+        if label == "—":
+            return ("bloqueante", "Selecciona el tipo de textual")
+        if any(not (c.get("orador_nombre") or "").strip()
+               or not (c.get("orador_cargo") or "").strip() for c in sel):
+            return ("bloqueante", "Selecciona nombre y cargo del textual")
+        tipo = {"simple": "simple", "x2": "x2",
+                "con foto": "con_foto", "con foto XL": "con_foto_xl"}.get(label)
+        if tipo in ("con_foto", "con_foto_xl"):
+            foto = sel[0].get("foto") or {}
+            if not (foto.get("path") or "").strip():
+                return ("aviso", "Selecciona una foto para el textual")
+        return None
+
+    def _refrescar_alerta_textuales(self):
+        est = self._estado_alerta_textuales()
+        bar = self._right_tabs.alert_bar
+        idx = self._idx_tab_textuales()
+        if est:
+            icono = str(Path(__file__).parent / "assets" / "alerta.png")
+            bar.set_alert(idx, est[1], icono)
+        else:
+            bar.set_alert(idx, None)
+
+    def _on_right_tab_changed(self, nuevo: int):
+        self._update_arrow_overlay()
+        idx = self._idx_tab_textuales()
+        if nuevo != idx and self._right_tabs.alert_bar.has_alert(idx):
+            self._right_tabs.alert_bar.shake(idx)
+
+    def _bloqueo_textuales(self) -> bool:
+        """True si hay alerta bloqueante: enfoca la pestaña, sacude y avisa."""
+        est = self._estado_alerta_textuales()
+        if est and est[0] == "bloqueante":
+            idx = self._idx_tab_textuales()
+            self._refrescar_alerta_textuales()
+            self._right_tabs.setCurrentIndex(idx)
+            self._right_tabs.alert_bar.shake(idx)
+            QMessageBox.warning(self, "Textuales", est[1])
+            return True
+        return False
 
     def _on_numero_card_toggled(self):
         if self._numero_card._is_selected:
@@ -1905,8 +2004,89 @@ class EditorNotaWindow(QMainWindow):
     # Selección manual de textual desde el cuerpo
     # ------------------------------------------------------------------
 
-    def _on_sel_textual_toggled(self, on: bool):
-        self._sel_textual_row.setVisible(on)
+    def eventFilter(self, obj, ev):
+        """Colapso tipo app-bar: rueda abajo oculta volanta/título/bajada/firma/epígrafe
+        (el cuerpo llena el panel); rueda arriba con el scroll en tope debe VENCER una
+        resistencia (~3 muescas acumuladas) para volver a mostrarlos."""
+        if ev.type() == QEvent.Wheel and self._stories:
+            panel = self._story_tabs.currentWidget()
+            if isinstance(panel, StoryPanel):
+                dy = ev.angleDelta().y()
+                if dy < 0:
+                    # Rueda abajo: colapsar el bloque superior (el epígrafe queda fuera
+                    # del colapso, así que sigue visible junto al cuerpo).
+                    if not panel.upper_collapsed():
+                        panel.set_upper_collapsed(True)
+                    self._resist_acc = 0
+                elif dy > 0 and panel.upper_collapsed():
+                    sb = (self._left_scroll.verticalScrollBar()
+                          if obj is self._left_scroll.viewport()
+                          else panel.ed_cuerpo.verticalScrollBar())
+                    if sb.value() <= 0:
+                        self._resist_acc += dy
+                        if self._resist_acc >= 360:
+                            panel.set_upper_collapsed(False)
+                            self._resist_acc = 0
+                    else:
+                        self._resist_acc = 0
+        return super().eventFilter(obj, ev)
+
+    def _crear_sel_manual_ui(self, lay, mode: str):
+        """Botón 'Selección manual en texto' + fila Aceptar/Cancelar (mismo patrón que
+        Textuales) para las pestañas Dato y Número. Devuelve (btn_toggle, row)."""
+        btn = QPushButton("Selección manual en texto")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        lay.addWidget(btn)
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        ok = QPushButton("Aceptar")
+        ko = QPushButton("Cancelar")
+        ok.setCursor(Qt.PointingHandCursor)
+        ko.setCursor(Qt.PointingHandCursor)
+        ok.setStyleSheet(
+            "QPushButton { background: rgba(90,188,138,0.20); color: #5abc8a;"
+            " border: 1px solid rgba(90,188,138,0.5); border-radius: 6px; padding: 4px 10px; }"
+            " QPushButton:hover { background: rgba(90,188,138,0.35); }"
+        )
+        ko.setStyleSheet(
+            "QPushButton { background: rgba(230,120,60,0.18); color: #e87844;"
+            " border: 1px solid rgba(230,120,60,0.4); border-radius: 6px; padding: 4px 10px; }"
+            " QPushButton:hover { background: rgba(230,120,60,0.30); }"
+        )
+        rl.addWidget(ok)
+        rl.addWidget(ko)
+        row.setVisible(False)
+        lay.addWidget(row)
+        btn.toggled.connect(lambda on, m=mode: self._on_sel_mode_toggled(m, on))
+        ok.clicked.connect(lambda _=False, m=mode: self._on_sel_mode_accept(m))
+        ko.clicked.connect(lambda _=False, m=mode: self._on_sel_mode_cancel(m))
+        return btn, row
+
+    def _sel_manual_ctrl(self) -> dict:
+        """mode -> (botón toggle, fila aceptar/cancelar) de los 3 modos de selección manual."""
+        return {
+            "textual": (self._btn_sel_textual, self._sel_textual_row),
+            "dato": (self._btn_sel_dato, self._sel_dato_row),
+            "numero": (self._btn_sel_numero, self._sel_numero_row),
+        }
+
+    def _on_sel_mode_toggled(self, mode: str, on: bool):
+        _btn, row = self._sel_manual_ctrl()[mode]
+        row.setVisible(on)
+        if on:
+            # Los tres modos son mutuamente excluyentes.
+            for m, (b, r) in self._sel_manual_ctrl().items():
+                if m != mode and b.isChecked():
+                    b.blockSignals(True)
+                    b.setChecked(False)
+                    b.blockSignals(False)
+                    r.setVisible(False)
+        activo = any(b.isChecked() for b, _ in self._sel_manual_ctrl().values())
+        self._aplicar_borde_seleccion(activo)
+
+    def _aplicar_borde_seleccion(self, on: bool):
         if not self._stories:
             return
         panel = self._stories[0]
@@ -1924,20 +2104,52 @@ class EditorNotaWindow(QMainWindow):
             # Restaurar el tema de lectura del cuerpo (no vaciar el stylesheet).
             panel._refresh_cuerpo_style(getattr(panel.cnt_cuerpo, "state", None))
 
-    def _on_sel_textual_accept(self):
+    def _on_sel_mode_accept(self, mode: str):
         if not self._stories:
             return
         text = self._stories[0].ed_cuerpo.textCursor().selectedText().strip()
+        text = text.replace("\u2029", "\n")   # separador de párrafo de QTextEdit
+        btn, _row = self._sel_manual_ctrl()[mode]
         if text:
-            self._textual_cards.add_preselected([text])
-        self._btn_sel_textual.setChecked(False)
+            if mode == "textual":
+                self._textual_cards.add_preselected([text])
+            elif mode == "dato":
+                self._agregar_dato_desde_texto(text)
+            else:
+                self._agregar_numero_desde_texto(text)
+        btn.setChecked(False)
 
-    def _on_sel_textual_cancel(self):
+    def _on_sel_mode_cancel(self, mode: str):
         if self._stories:
             c = self._stories[0].ed_cuerpo.textCursor()
             c.clearSelection()
             self._stories[0].ed_cuerpo.setTextCursor(c)
-        self._btn_sel_textual.setChecked(False)
+        btn, _row = self._sel_manual_ctrl()[mode]
+        btn.setChecked(False)
+
+    def _agregar_dato_desde_texto(self, text: str):
+        """Crea una card de Dato ya seleccionada con el texto elegido del cuerpo."""
+        limit = self._mq.get("dato_limit", 120)
+        card = _DatoCard(text, limit)
+        card.set_edited_text(text)
+        card.selected.connect(lambda t, c=card: self._on_dato_card_selected(t, c))
+        card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
+        self._dato_lay_cards.insertWidget(0, card)
+        self._dato_cards.insert(0, card)
+        card.set_selected(True)
+        self._on_dato_card_selected(text, card)   # deselecciona otras + recalcula + resalta
+
+    def _agregar_numero_desde_texto(self, text: str):
+        """Abre el diálogo de Número con el texto elegido precargado (falta la cabecera)."""
+        d = self._numero_card.get_data()
+        dlg = _NumeroEditDialog(d["cabecera"], text, parent=self)
+        if dlg.exec_() == dlg.Accepted:
+            r = dlg.get_result()
+            self._numero_card.set_data(r["cabecera"], r["texto"])
+            if r["cabecera"] or r["texto"]:
+                self._numero_card.set_selected(True)
+                self._on_numero_card_toggled()
+            self._recalcular_deduccion()
 
     # ------------------------------------------------------------------
     # Corrección: acciones globales
@@ -2261,8 +2473,8 @@ class EditorNotaWindow(QMainWindow):
             QPushButton {{
                 background: rgba(255,255,255,0.08);
                 border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 8px;
-                padding: 8px 14px;
+                border-radius: 7px;
+                padding: 6px 12px;
                 color: #e2e8f0;
             }}
             QPushButton:hover {{ background: rgba(255,255,255,0.14); }}
@@ -2275,7 +2487,7 @@ class EditorNotaWindow(QMainWindow):
                 background: rgba(231,136,95,0.38);
             }}
             QPushButton[compact="true"] {{
-                padding: 6px 11px;
+                padding: 4px 10px;
                 font-size: 11px;
             }}
             QScrollBar:vertical {{
@@ -2295,6 +2507,10 @@ class EditorNotaWindow(QMainWindow):
             QTabWidget::pane {{
                 border: 1px solid rgba(255,255,255,0.10);
                 border-radius: 6px;
+            }}
+            QTabBar {{
+                background: transparent;
+                border: none;
             }}
             QTabBar::tab {{
                 padding: 6px 14px;

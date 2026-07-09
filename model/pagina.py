@@ -18,7 +18,9 @@ class Pagina:
     aviso_half: bool = False
     aviso_footer: bool = False
     aviso_robapagina: bool = False
+    aviso_doblemedia: bool = False   # dos medias páginas apiladas (sup + inf)
     aviso_nombre: str = ""
+    aviso_nombre2: str = ""          # archivo del aviso INFERIOR (solo doble media)
     tapa_foto: bool = False
     tapa_titulo: bool = False
     listo_para_armar: bool = False

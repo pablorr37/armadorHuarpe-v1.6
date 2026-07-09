@@ -197,16 +197,20 @@ class _PaginaWorker(QThread):
                 a.reemplazar_con_atajo(dst)
 
     def _redimensionar_foto3(self, a):
-        """Si la página lleva foto a 3 columnas (wide/ancha): seleccionar cada foto (por plantilla)
-        y escribir A (Ancho) y Al (Alto) en el panel de medidas. Se hace ANTES de tocar el selector
-        de plantilla (que reacomoda la vista)."""
+        """Si la página lleva foto a 3 columnas (3 col/ancha) o 4 columnas: seleccionar cada foto
+        (por plantilla) y escribir A (Ancho) y Al (Alto) en el panel de medidas. Se hace ANTES de
+        tocar el selector de plantilla (que reacomoda la vista)."""
         var = foto3_variante(self.comp)
         if not var:
             return
         campo_a = self.calib.get("campo_a")
         campo_al = self.calib.get("campo_al")
-        a_val = self.calib.get("foto_a")
-        al_val = self.calib.get("foto_al_wide" if var == "wide" else "foto_al_ancha")
+        if var == "4col":
+            a_val = self.calib.get("foto_a_4col")
+            al_val = self.calib.get("foto_al_4col")
+        else:
+            a_val = self.calib.get("foto_a")
+            al_val = self.calib.get("foto_al_wide" if var == "wide" else "foto_al_ancha")
         if not (campo_a and campo_al and a_val and al_val):
             _log.info("Foto3 %s: falta calibración (campos A/Al o valores) → se omite.", var)
             return

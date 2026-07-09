@@ -75,13 +75,15 @@ class _MaquetaFotoWidget(QWidget):
         self._comp = comp or {}
         self._pag_num = int(pag_num or 0)
         t = (self._comp.get("foto_tipo") or "").lower()
-        self._tiene_foto = bool(t)
-        self._ncols = 2 if "2" in t else 3
+        self._tiene_foto = bool(t) and "sin" not in t   # "Sin foto" no dibuja foto
+        self._ncols = 2 if "2" in t else (4 if "4" in t else 3)
         self._ancha = "ancha" in t
         if not self._tiene_foto:
             self._foto_label = ""
         elif self._ncols == 2:
             self._foto_label = "foto 2 columnas"
+        elif self._ncols == 4:
+            self._foto_label = "foto 4 columnas"
         elif self._ancha:
             self._foto_label = "foto 3 columnas ancha"
         else:
@@ -123,7 +125,12 @@ class _MaquetaFotoWidget(QWidget):
 
         # --- Área del aviso (detrás de todo) + nombre ---
         atipo = (c.get("aviso_tipo") or "").strip()
-        if atipo:
+        if atipo == "doblemedia":
+            area_sup = QRectF(r.left(), r.top(), r.width(), r.height() / 2)
+            area_inf = QRectF(r.left(), r.top() + r.height() / 2, r.width(), r.height() / 2)
+            self._label_rect(p, area_sup, c.get("aviso_nombre") or "Aviso")
+            self._label_rect(p, area_inf, c.get("aviso_nombre2") or "Aviso")
+        elif atipo:
             if atipo == "full":
                 area = QRectF(r)
             elif atipo == "half":
@@ -155,14 +162,15 @@ class _MaquetaFotoWidget(QWidget):
             cx = inner.left() + k * col_w
             p.drawLine(QPointF(cx, inner.top()), QPointF(cx, inner.bottom()))
 
-        # --- Banda de foto (desde la columna 2; a 3 col llega al borde derecho) ---
+        # --- Banda de foto (desde la col. 2; a 3 col llega al borde; a 4 col ancho completo) ---
         foto_top = inner.top() + inner.height() * 0.16
-        if self._ancha:
+        if self._ancha or self._ncols == 4:
             foto_h = (inner.top() + inner.height() * 0.5) - foto_top
         else:
             foto_h = inner.height() * 0.22
         if self._tiene_foto:
-            foto_x = inner.left() + col_w + gap / 2.0
+            foto_x = (inner.left() + gap / 2.0 if self._ncols == 4
+                      else inner.left() + col_w + gap / 2.0)
             foto_right = inner.right() if self._ncols >= 3 else (inner.left() + 3 * col_w - gap / 2.0)
             self._label_rect(p, QRectF(foto_x, foto_top, foto_right - foto_x, foto_h),
                              self._foto_label)

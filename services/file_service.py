@@ -265,7 +265,9 @@ DEFAULT_PAGE_FIELDS = {
     "aviso_half": "false",
     "aviso_footer": "false",
     "aviso_robapagina": "false",
+    "aviso_doblemedia": "false",
     "aviso_nombre": "",
+    "aviso_nombre2": "",
     "tapa_foto": "false",
     "tapa_titulo": "false",
     "listo_para_armar": "false",
@@ -441,6 +443,8 @@ class FileService:
                 tipo = "pie"
             elif entry.get("aviso_robapagina"):
                 tipo = "robapagina"
+            elif entry.get("aviso_doblemedia"):
+                tipo = "media"   # cada mitad de la doble media es una media página
         except Exception:
             tipo = ""
 
@@ -530,12 +534,13 @@ class FileService:
     
     
     #--------- PARA MINIATURAS EN LA GRILLA DE PÁGINAS ----------
-    def find_aviso_image_for_page(self, numero: int) -> Optional[Path]:
+    def find_aviso_image_for_page(self, numero: int, segundo: bool = False) -> Optional[Path]:
         """
         Devuelve la ruta del archivo de imagen para el aviso de la página dada.
         - Si no hay aviso o aún no existen archivos → None (maqueta naranja).
         - Si el aviso es PDF o EPS → genera miniatura PNG temporal en cache.
         - Si el aviso es JPG/PNG/TIF → devuelve la ruta directamente.
+        - `segundo=True` resuelve el aviso INFERIOR de una doble media (aviso_nombre2).
         """
 
         try:
@@ -544,7 +549,8 @@ class FileService:
             return None  # aún no hay INI o la página no existe
 
         # Nombre del aviso registrado en el ini (puede venir vacío)
-        nombre = (entry.get("aviso_nombre") or "").strip()
+        campo = "aviso_nombre2" if segundo else "aviso_nombre"
+        nombre = (entry.get(campo) or "").strip()
         if not nombre:
             return None
 
@@ -558,6 +564,8 @@ class FileService:
             tipo = "PIE"
         elif entry.get("aviso_robapagina"):
             tipo = "ROBAPAGINA"
+        elif entry.get("aviso_doblemedia"):
+            tipo = "MEDIA"   # cada mitad es una media página
 
         # Buscar carpeta base de avisos
         avisos_dir = self.rutas.get("avisos_dir") if hasattr(self, "rutas") else None
@@ -679,6 +687,8 @@ class FileService:
                 t = "pagina"
             elif entry.get("aviso_robapagina", False):
                 t = "robapagina"
+            elif entry.get("aviso_doblemedia", False):
+                t = "media"   # cada mitad de la doble media es una media página
             else:
                 t = ""
 
@@ -1447,7 +1457,9 @@ class FileService:
             "aviso_half": cfg[sec].getboolean("aviso_half", fallback=False),
             "aviso_footer": cfg[sec].getboolean("aviso_footer", fallback=False),
             "aviso_robapagina": cfg[sec].getboolean("aviso_robapagina", fallback=False),
+            "aviso_doblemedia": cfg[sec].getboolean("aviso_doblemedia", fallback=False),
             "aviso_nombre": cfg[sec].get("aviso_nombre", "").strip(),
+            "aviso_nombre2": cfg[sec].get("aviso_nombre2", "").strip(),
             "tapa_foto": cfg[sec].getboolean("tapa_foto", fallback=False),
             "tapa_titulo": cfg[sec].getboolean("tapa_titulo", fallback=False),
             "listo_para_armar": cfg[sec].getboolean("listo_para_armar", fallback=False),
@@ -1564,7 +1576,9 @@ class FileService:
             "aviso_half": mapping.get("aviso_half", "false").lower() == "true",
             "aviso_footer": mapping.get("aviso_footer", "false").lower() == "true",
             "aviso_robapagina": mapping.get("aviso_robapagina", "false").lower() == "true",
+            "aviso_doblemedia": mapping.get("aviso_doblemedia", "false").lower() == "true",
             "aviso_nombre": mapping.get("aviso_nombre", ""),
+            "aviso_nombre2": mapping.get("aviso_nombre2", ""),
             "tapa_foto": mapping.get("tapa_foto", "false").lower() == "true",
             "tapa_titulo": mapping.get("tapa_titulo", "false").lower() == "true",
             "listo_para_armar": mapping.get("listo_para_armar", "false").lower() == "true",
@@ -1708,16 +1722,17 @@ class FileService:
 
     def mark_aviso_robapagina(self, numero: int, by: Optional[str] = None):
         """
-        Robapágina: enciende robapagina, apaga full/half/footer. Compatible con texto (no lo toca). 
+        Robapágina: enciende robapagina, apaga full/half/footer. Compatible con texto (no lo toca).
         """
         entry = self.read_page_entry(numero)
         self.write_page_entry(
-            
+
             numero,
             aviso_full=False,
             aviso_half=False,
             aviso_footer=False,
             aviso_robapagina=True,
+            aviso_doblemedia=False,
             by=(by or entry.get("by") or "")
         )
 
@@ -1733,11 +1748,39 @@ class FileService:
             aviso_full=True,
             aviso_half=False,
             aviso_footer=False,
+            aviso_doblemedia=False,
             assigned=False,
             txt_name="",
             by=(by or entry.get("by") or "")
         )
         # Copiar maqueta según aviso/sección (en completa: completa.qxp → {numero}.qxp)
+        cfg = configparser.ConfigParser()
+        cfg.read(str(Config.CONFIG_FILE), encoding="utf-8")
+        version_quark = cfg.get("quark", "quark_seleccionado", fallback="Quark 8").strip()
+        if version_quark == "Quark 2018":
+            try:
+                self.copiar_maqueta_a_materiales(numero)
+            except Exception as e:
+                _log.warning("No se pudo copiar maqueta para P%02d: %s", numero, e)
+
+    def mark_aviso_doblemedia(self, numero: int, by: Optional[str] = None):
+        """
+        Doble media: dos medias páginas apiladas (sup + inf) = página entera de avisos.
+        Como 'completa': apaga los demás tipos y limpia texto/asignación.
+        """
+        entry = self.read_page_entry(numero)
+        self.write_page_entry(
+            numero,
+            aviso_full=False,
+            aviso_half=False,
+            aviso_footer=False,
+            aviso_robapagina=False,
+            aviso_doblemedia=True,
+            assigned=False,
+            txt_name="",
+            by=(by or entry.get("by") or "")
+        )
+        # Copiar la maqueta dedicada (dobleMedia.qxp) igual que hace 'completa'.
         cfg = configparser.ConfigParser()
         cfg.read(str(Config.CONFIG_FILE), encoding="utf-8")
         version_quark = cfg.get("quark", "quark_seleccionado", fallback="Quark 8").strip()
@@ -1757,6 +1800,7 @@ class FileService:
             aviso_full=False,
             aviso_half=True,
             aviso_footer=False,
+            aviso_doblemedia=False,
             by=(by or entry.get("by") or "")
         )
 
@@ -1770,12 +1814,13 @@ class FileService:
             aviso_full=False,
             aviso_half=False,
             aviso_footer=True,
+            aviso_doblemedia=False,
             by=(by or entry.get("by") or "")
         )
 
     def clear_avisos(self, numero: int, by: Optional[str] = None):
         """
-        Quita todos los avisos (full/half/footer) en INI.
+        Quita todos los avisos (full/half/footer/roba/doblemedia) en INI.
         No toca 'assigned' ni 'txt_name'.
         """
         entry = self.read_page_entry(numero)
@@ -1785,7 +1830,9 @@ class FileService:
             aviso_half=False,
             aviso_footer=False,
             aviso_robapagina=False,
+            aviso_doblemedia=False,
             aviso_nombre = "",
+            aviso_nombre2 = "",
             by=(by or entry.get("by") or "")
         )
 
@@ -3167,6 +3214,8 @@ class FileService:
             tipo = "vacia"
             if entry.get("aviso_full"):
                 tipo = "completa"
+            elif entry.get("aviso_doblemedia"):
+                tipo = "doblemedia"
             elif entry.get("aviso_footer"):
                 tipo = "pie"
             elif entry.get("aviso_half"):
@@ -3237,6 +3286,9 @@ class FileService:
                 entry = self.read_page_entry(numero)
                 if entry.get("aviso_full"):
                     nombre_maqueta = "completa.qxp"
+                elif entry.get("aviso_doblemedia"):
+                    # Maqueta única, sin variantes por sección (como completa).
+                    nombre_maqueta = "dobleMedia.qxp"
                 else:
                     tipo = "vacia"
                     if entry.get("aviso_footer"):
@@ -3288,6 +3340,7 @@ class FileService:
                 entry.get("aviso_full"), entry.get("aviso_half"),
                 entry.get("aviso_footer"), entry.get("aviso_robapagina"),
                 entry.get("seccion", ""), self.rutas,
+                aviso_doblemedia=entry.get("aviso_doblemedia"),
             )
             if not resolved:
                 return None
@@ -3467,7 +3520,8 @@ class FileService:
     # ENROCAR PÁGINAS — intercambio de contenido entre dos páginas
     # ==================================================================
 
-    _AVISO_FIELDS = {"aviso_full", "aviso_half", "aviso_footer", "aviso_robapagina", "aviso_nombre"}
+    _AVISO_FIELDS = {"aviso_full", "aviso_half", "aviso_footer", "aviso_robapagina",
+                     "aviso_doblemedia", "aviso_nombre", "aviso_nombre2"}
 
     def enrocar_paginas(self, x: int, y: int, con_aviso: bool,
                         qxp_mode: str = "ninguno") -> None:

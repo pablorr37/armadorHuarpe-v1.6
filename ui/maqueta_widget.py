@@ -202,10 +202,11 @@ class MaquetaWidget(QWidget):
     # Carga del aviso en HILO separado (#10)
     # --------------------------------------------------------
     def _tipo_aviso(self) -> str:
-        if getattr(self.pagina, "aviso_full", False):       return "COMPLETA"
-        if getattr(self.pagina, "aviso_half", False):       return "MEDIA"
-        if getattr(self.pagina, "aviso_footer", False):     return "PIE"
-        if getattr(self.pagina, "aviso_robapagina", False): return "ROBAPAGINA"
+        if getattr(self.pagina, "aviso_full", False):        return "COMPLETA"
+        if getattr(self.pagina, "aviso_doblemedia", False):  return "DOBLE MEDIA"
+        if getattr(self.pagina, "aviso_half", False):        return "MEDIA"
+        if getattr(self.pagina, "aviso_footer", False):      return "PIE"
+        if getattr(self.pagina, "aviso_robapagina", False):  return "ROBAPAGINA"
         return ""
 
     def _stop_aviso_thread(self):
@@ -635,6 +636,37 @@ class MaquetaWidget(QWidget):
 
         naranja = QColor("#eb7846")
 
+        def _dibujar_area(area, pixmap, ignore_aspect=False, es_full=False):
+            """Dibuja el pixmap real (llenando el área) o, si falta, el bloque naranja modelo."""
+            if mostrar_aviso and pixmap and not pixmap.isNull():
+                target = area
+                margin = target.width() * 0.025
+                target = target.adjusted(margin, margin, -margin, -margin)
+                # Medias (y mitades de doble media) llenan su espacio completo (deforma levemente).
+                aspect_mode = Qt.IgnoreAspectRatio if ignore_aspect else Qt.KeepAspectRatio
+                scaled = pixmap.scaled(int(target.width()), int(target.height()),
+                                       aspect_mode, Qt.SmoothTransformation)
+                x = int(target.x() + (target.width() - scaled.width()) / 2)
+                y = int(target.y() + (target.height() - scaled.height()) / 2)
+                painter.drawPixmap(x, y, scaled)
+                return
+            area_modelo = area
+            if es_full:
+                m = min(area.width(), area.height()) * 0.02
+                area_modelo = area.adjusted(m, m, -m, -m)
+            painter.fillRect(area_modelo, naranja)
+            painter.setPen(QPen(Qt.black, 0.1))
+            painter.drawRect(area_modelo)
+
+        # === Doble media: dos mitades apiladas, cada una con su propio aviso ===
+        if getattr(pagina, "aviso_doblemedia", False):
+            area_sup = QRectF(rect.left(), rect.top(), rect.width(), rect.height() / 2)
+            area_inf = QRectF(rect.left(), rect.top() + rect.height() / 2,
+                              rect.width(), rect.height() / 2)
+            _dibujar_area(area_sup, getattr(pagina, "aviso_pixmap", None), ignore_aspect=True)
+            _dibujar_area(area_inf, getattr(pagina, "aviso_pixmap2", None), ignore_aspect=True)
+            return
+
         # === Determinar área del aviso según tipo ===
         area_aviso = None
         if getattr(pagina, "aviso_full", False):
@@ -661,45 +693,10 @@ class MaquetaWidget(QWidget):
             else:
                 area_aviso = QRectF(rect.left() + ancho, rect.top(), ancho, rect.height())
 
-        # === Si hay aviso real, dibujarlo ===
-        # SOLO si hay un área de aviso (flags activos). Esto evita que un pixmap
-        # cacheado de otra edición (flags apagados) se dibuje a página completa.
-        pixmap = getattr(pagina, "aviso_pixmap", None)
-        if mostrar_aviso and pixmap and not pixmap.isNull() and area_aviso is not None:
-            target = area_aviso
-
-            # 🔹 Margen mínimo y uniforme
-            margin = target.width() * 0.025
-            target = target.adjusted(margin, margin, -margin, -margin)
-
-            # 🔹 Escalado: medias llenan su espacio completo (puede deformar levemente)
-            if getattr(pagina, "aviso_half", False):
-                aspect_mode = Qt.IgnoreAspectRatio    # ✅ llena completamente la mitad inferior
-            else:
-                aspect_mode = Qt.KeepAspectRatio
-
-            scaled = pixmap.scaled(
-                int(target.width()),
-                int(target.height()),
-                aspect_mode,
-                Qt.SmoothTransformation
-            )
-
-            x = int(target.x() + (target.width() - scaled.width()) / 2)
-            y = int(target.y() + (target.height() - scaled.height()) / 2)
-            painter.drawPixmap(x, y, scaled)
-            return
-
-        # === Si no hay imagen pero hay tipo de aviso → pintar área naranja (modelo) ===
         if area_aviso is not None:
-            area_modelo = area_aviso
-            # Aviso COMPLETO: dejar ~2% de espacio entre el botón/celda y el modelo naranja.
-            if getattr(pagina, "aviso_full", False):
-                m = min(area_aviso.width(), area_aviso.height()) * 0.02
-                area_modelo = area_aviso.adjusted(m, m, -m, -m)
-            painter.fillRect(area_modelo, naranja)
-            painter.setPen(QPen(Qt.black, 0.1))
-            painter.drawRect(area_modelo)
+            _dibujar_area(area_aviso, getattr(pagina, "aviso_pixmap", None),
+                         ignore_aspect=getattr(pagina, "aviso_half", False),
+                         es_full=getattr(pagina, "aviso_full", False))
 
 
 

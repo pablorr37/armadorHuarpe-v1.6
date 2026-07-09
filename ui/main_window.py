@@ -814,33 +814,35 @@ class PollWorker(QObject):
 
 class AvisoCacheWorker(QObject):
     """Genera en disco los PNG de caché de los avisos (GhostScript/fitz) en un hilo
-    aparte. NO crea QPixmap (eso queda para el hilo GUI). Emite {numero: (png_path, mtime)}."""
+    aparte. NO crea QPixmap (eso queda para el hilo GUI). Emite {(numero, segundo): (png_path, mtime)}
+    — 'segundo'=True identifica el aviso INFERIOR de una doble media (aviso_nombre2)."""
     done = pyqtSignal(dict)
     finished = pyqtSignal()
 
     def __init__(self, tareas):
         super().__init__()
-        self.tareas = tareas   # list[(numero:int, path_str:str, mtime:float)]
+        self.tareas = tareas   # list[(numero:int, path_str:str, mtime:float, segundo:bool)]
 
     def run(self):
         from ui.maqueta_widget import _eps_to_png, pdf_to_png
         out = {}
-        for numero, path_str, mtime in self.tareas:
+        for numero, path_str, mtime, segundo in self.tareas:
+            key = (numero, segundo)
             try:
                 p = Path(path_str)
                 ext = p.suffix.lower()
                 if ext == ".eps":
                     png = _eps_to_png(p, Path("cache_eps"))
                     if png and png.exists():
-                        out[numero] = (str(png), mtime)
+                        out[key] = (str(png), mtime)
                 elif ext == ".pdf":
                     png = pdf_to_png(p, Path("cache_pdf"))
                     if png and png.exists():
-                        out[numero] = (str(png), mtime)
+                        out[key] = (str(png), mtime)
                 elif p.exists():
-                    out[numero] = (str(p), mtime)
+                    out[key] = (str(p), mtime)
             except Exception as e:
-                _log.warning("AvisoCacheWorker P%02d: %s", numero, e)
+                _log.warning("AvisoCacheWorker P%02d (segundo=%s): %s", numero, segundo, e)
         self.done.emit(out)
         self.finished.emit()
 
@@ -1375,6 +1377,8 @@ class MainWindow(QMainWindow):
             "font-size: 16px; color: #cccaca; font-weight: bold;"
         )
         self.label_aviso_nombre.setVisible(False)
+        self.label_aviso_nombre.setToolTip("Doble clic para escribir el nombre del archivo")
+        self.label_aviso_nombre.installEventFilter(self)
         arm_layout.addWidget(self.label_aviso_nombre)
 
         # Estado de navegación
@@ -1776,6 +1780,11 @@ class MainWindow(QMainWindow):
         
     def eventFilter(self, obj, event):
         """Captura teclas globales para navegación de páginas (solo cuando MainWindow está activa)."""
+        if obj is getattr(self, "label_aviso_nombre", None) and \
+                event.type() == QEvent.MouseButtonDblClick:
+            self._on_label_aviso_doble_clic()
+            return True
+
         from PyQt5.QtGui import QKeyEvent
         if not (event.type() == QEvent.KeyPress and isinstance(event, QKeyEvent)):
             return super().eventFilter(obj, event)
@@ -2752,6 +2761,7 @@ class MainWindow(QMainWindow):
         for label, slot in (
             ("Página completa", self._accion_asignar_aviso_full),
             ("Media página", self._accion_asignar_aviso_half),
+            ("Doble media", self._accion_asignar_aviso_doblemedia),
             ("Robapágina", self._accion_asignar_aviso_robapagina),
             ("Pie de página", self._accion_asignar_aviso_footer),
         ):
@@ -2762,6 +2772,18 @@ class MainWindow(QMainWindow):
         act_clear = QAction("Quitar avisos", self)
         act_clear.triggered.connect(lambda: self._accion_quitar_avisos(numero))
         m.addAction(act_clear)
+        return m
+
+    def _menu_asignar_aviso(self, numero: int) -> QMenu:
+        """Doble media: elegir qué lado (superior/inferior) asignar por separado, en vez
+        de forzar los dos file-dialogs en secuencia cada vez."""
+        m = QMenu(self); m.setStyleSheet(_AJUSTES_MENU_QSS)
+        a_sup = QAction("Aviso superior…", self)
+        a_sup.triggered.connect(lambda: self._accion_asignar_aviso_individual(numero, "sup"))
+        m.addAction(a_sup)
+        a_inf = QAction("Aviso inferior…", self)
+        a_inf.triggered.connect(lambda: self._accion_asignar_aviso_individual(numero, "inf"))
+        m.addAction(a_inf)
         return m
 
     def _menu_enrocar(self, numero: int) -> QMenu:
@@ -2840,7 +2862,7 @@ class MainWindow(QMainWindow):
             fs = self.controller.file_service
             entry = fs.read_page_entry(numero)
             usuario = (self.controller.usuario or "desconocido")
-            if entry.get("aviso_full", False):
+            if entry.get("aviso_full", False) or entry.get("aviso_doblemedia", False):
                 fs.mark_assigned(numero, txt_name="", by=usuario, apagar_aviso_full=False)
             else:
                 txt_path = fs.obtener_txt(numero)
@@ -2942,18 +2964,22 @@ class MainWindow(QMainWindow):
         tiene_txt = bool(getattr(pag, "asignado", False))
         asignada = bool(getattr(pag, "asignada_por_ini", False))
         aviso_full = bool(getattr(pag, "aviso_full", False))
+        aviso_doblemedia = bool(getattr(pag, "aviso_doblemedia", False))
+        # Páginas 100% publicitarias (sin TXT propio): completa y doble media.
+        aviso_sin_txt = aviso_full or aviso_doblemedia
         # "Asignar aviso" solo si hay un tipo de aviso configurado en la página
         tiene_aviso_tipo = bool(
             aviso_full
             or getattr(pag, "aviso_half", False)
             or getattr(pag, "aviso_footer", False)
             or getattr(pag, "aviso_robapagina", False)
+            or aviso_doblemedia
         )
         try:
             tiene_frags = bool(self.controller.obtener_fragmentos(numero, 0))
         except Exception:
             tiene_frags = False
-        puede_pegar = bool(asignada and (tiene_frags or aviso_full))
+        puede_pegar = bool(asignada and (tiene_frags or aviso_sin_txt))
         puede_eliminar = bool(tiene_txt or hay_qxp or hay_pdf)
         # Toggle Asignar / Quitar asignación
         if asignada:
@@ -2963,7 +2989,7 @@ class MainWindow(QMainWindow):
         else:
             asignar_icon, asignar_txt = "asignar.png", "Asignar"
             asignar_cb = lambda a: self._accion_asignar_directo(numero)
-            asignar_enabled = bool(tiene_txt or aviso_full)
+            asignar_enabled = bool(tiene_txt or aviso_sin_txt)
 
         px = lambda name: QPixmap(resource_path(f"ui/assets/{name}"))
         items = [
@@ -2975,7 +3001,11 @@ class MainWindow(QMainWindow):
              ["Pegar en Quark"] if asignar_txt == "Asignar" else []),
             (px("seccion.png"),     "Sección",         lambda a: _show(self._menu_seccion, a)),
             (px("aviso.png"),       "Configurar aviso", lambda a: _show(self._menu_avisos, a)),
-            (px("asignar-aviso.png"), "Asignar aviso", lambda a: self._accion_asignar_aviso_archivo(numero), tiene_aviso_tipo),
+            (px("asignar-aviso.png"), "Asignar aviso",
+             (lambda a: _show(self._menu_asignar_aviso, a))
+             if getattr(pag, "aviso_doblemedia", False)
+             else (lambda a: self._accion_asignar_aviso_archivo(numero)),
+             tiene_aviso_tipo),
             (px("enroque.png"),     "Enrocar páginas", lambda a: _show(self._menu_enrocar, a)),
             (px("foto_tapa.png"),   "Foto de tapa",    lambda a: _toggle_tapa("tapa_foto", self._accion_marcar_tapa_foto)),
             (px("titulo_tapa.png"), "Título de tapa",  lambda a: _toggle_tapa("tapa_titulo", self._accion_marcar_tapa_titulo)),
@@ -3716,10 +3746,15 @@ class MainWindow(QMainWindow):
                 pag.aviso_half = False
                 pag.aviso_footer = False
                 pag.aviso_robapagina = False
+                pag.aviso_doblemedia = False
                 pag.aviso_nombre = ""
+                pag.aviso_nombre2 = ""
                 pag.aviso_path = None
                 pag.aviso_pixmap = None
                 pag.aviso_mtime = None
+                pag.aviso_path2 = None
+                pag.aviso_pixmap2 = None
+                pag.aviso_mtime2 = None
 
             # 3. Refrescar la UI y maqueta
             self._despues_de_cambio_estado(numero)
@@ -3880,6 +3915,7 @@ class MainWindow(QMainWindow):
         pag.aviso_full = False
         pag.aviso_half = False
         pag.aviso_footer = False
+        pag.aviso_doblemedia = False
         pag.aviso_robapagina = True
         self._registrar_trabajo(numero, "Configuró aviso robapágina")
         self._despues_de_cambio_estado(numero)
@@ -3896,6 +3932,8 @@ class MainWindow(QMainWindow):
         pag.aviso_full = True
         pag.aviso_half = False
         pag.aviso_footer = False
+        pag.aviso_robapagina = False
+        pag.aviso_doblemedia = False
         self._registrar_trabajo(numero, "Configuró aviso completa")
         self._despues_de_cambio_estado(numero)
         self.maqueta_widget.set_pagina(pag)
@@ -3909,6 +3947,8 @@ class MainWindow(QMainWindow):
         pag.aviso_full = False
         pag.aviso_half = True
         pag.aviso_footer = False
+        pag.aviso_robapagina = False
+        pag.aviso_doblemedia = False
         self._registrar_trabajo(numero, "Configuró aviso media")
         self._despues_de_cambio_estado(numero)
         self.maqueta_widget.set_pagina(pag)
@@ -3921,59 +3961,116 @@ class MainWindow(QMainWindow):
         pag.aviso_full = False
         pag.aviso_half = False
         pag.aviso_footer = True
+        pag.aviso_robapagina = False
+        pag.aviso_doblemedia = False
         self._registrar_trabajo(numero, "Configuró aviso pie de página")
         self._despues_de_cambio_estado(numero)
         self.maqueta_widget.set_pagina(pag)
         self._update_aviso_nombre(pag)
+
+    def _accion_asignar_aviso_doblemedia(self, numero: int):
+        usuario = (self.controller.usuario or "").strip()
+        self.controller.file_service.mark_aviso_doblemedia(numero, by=usuario)
+        pag = self.controller.gestor_paginas.obtener_pagina(numero)
+        pag.aviso_full = False
+        pag.aviso_half = False
+        pag.aviso_footer = False
+        pag.aviso_robapagina = False
+        pag.aviso_doblemedia = True
+        self._registrar_trabajo(numero, "Configuró aviso doble media")
+        self._despues_de_cambio_estado(numero)
+        self.maqueta_widget.set_pagina(pag)
+        self._update_aviso_nombre(pag)
+
+    def _elegir_archivo_aviso(self, numero: int, titulo: str) -> Optional[Path]:
+        """Abre el file dialog, copia el archivo elegido a materiales/Pxx/ y devuelve su
+        ruta destino, o None si se canceló/falló. Helper de _accion_asignar_aviso_archivo."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, titulo, "",
+            "Archivos de imagen o PDF (*.jpg *.jpeg *.png *.tif *.tiff *.pdf *.eps)"
+        )
+        if not file_path:
+            return None
+        src = Path(file_path)
+        if not src.exists():
+            QMessageBox.warning(self, "Asignar aviso", "El archivo seleccionado no existe.")
+            return None
+        dest_dir = self.controller.file_service.material / f"P{numero:02d}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / src.name
+        import shutil
+        shutil.copy2(src, dest_path)
+        return dest_path
 
     def _accion_asignar_aviso_archivo(self, numero: int):
         """
         Abre un diálogo de archivo para seleccionar un aviso manualmente
         y lo copia a materiales/Pxx/.
         Luego actualiza la maqueta y el estado visual.
+
+        No se usa para páginas DOBLE MEDIA: esas pasan por el submenú
+        "Asignar aviso" → _menu_asignar_aviso → _accion_asignar_aviso_individual,
+        que permite elegir/actualizar un solo lado (superior o inferior) por vez.
         """
         try:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                f"Seleccionar aviso para la página {numero:02d}",
-                "",
-                "Archivos de imagen o PDF (*.jpg *.jpeg *.png *.tif *.tiff *.pdf *.eps)"
-            )
-            if not file_path:
+            pag = self.controller.gestor_paginas.obtener_pagina(numero)
+            usuario = (self.controller.usuario or "").strip()
+
+            dest_path = self._elegir_archivo_aviso(
+                numero, f"Seleccionar aviso para la página {numero:02d}")
+            if not dest_path:
                 return
-
-            src = Path(file_path)
-            if not src.exists():
-                QMessageBox.warning(self, "Asignar aviso", "El archivo seleccionado no existe.")
-                return
-
-            # Carpeta de destino
-            dest_dir = self.controller.file_service.material / f"P{numero:02d}"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-
-            # Copiar el archivo al destino
-            dest_path = dest_dir / src.name
-            import shutil
-            shutil.copy2(src, dest_path)
 
             # Actualizar el INI con el nombre del aviso
-            usuario = (self.controller.usuario or "").strip()
-            self.controller.file_service.set_aviso_nombre(numero, src.name, by=usuario)
+            self.controller.file_service.set_aviso_nombre(numero, dest_path.name, by=usuario)
 
             # Actualizar visualmente la página
-            pag = self.controller.gestor_paginas.obtener_pagina(numero)
             if pag:
-                pag.aviso_nombre = src.name
+                pag.aviso_nombre = dest_path.name
                 pag.aviso_path = dest_path
                 pag.aviso_mtime = dest_path.stat().st_mtime
 
             # Refrescar la maqueta
-            self._registrar_trabajo(numero, f"Asignó aviso ({src.name})")
+            self._registrar_trabajo(numero, f"Asignó aviso ({dest_path.name})")
             self._despues_de_cambio_estado(numero)
             self.maqueta_widget.set_pagina(pag)
             self._update_aviso_nombre(pag)
 
+        except Exception as e:
+            QMessageBox.critical(self, "Asignar aviso", f"Error al asignar el aviso:\n{e}")
 
+    def _accion_asignar_aviso_individual(self, numero: int, cual: str):
+        """Doble media: asigna SOLO el lado elegido ('sup'=superior, 'inf'=inferior),
+        sin forzar los dos file-dialogs en secuencia. El otro lado no se toca."""
+        try:
+            pag = self.controller.gestor_paginas.obtener_pagina(numero)
+            usuario = (self.controller.usuario or "").strip()
+            etiqueta = "SUPERIOR (arriba)" if cual == "sup" else "INFERIOR (abajo)"
+
+            dest = self._elegir_archivo_aviso(
+                numero, f"Aviso {etiqueta} — página {numero:02d}")
+            if not dest:
+                return
+
+            if cual == "sup":
+                self.controller.file_service.write_page_entry(
+                    numero, aviso_nombre=dest.name, by=usuario)
+                if pag:
+                    pag.aviso_nombre = dest.name
+                    pag.aviso_path = dest
+                    pag.aviso_mtime = dest.stat().st_mtime
+            else:
+                self.controller.file_service.write_page_entry(
+                    numero, aviso_nombre2=dest.name, by=usuario)
+                if pag:
+                    pag.aviso_nombre2 = dest.name
+                    pag.aviso_path2 = dest
+                    pag.aviso_mtime2 = dest.stat().st_mtime
+
+            self._registrar_trabajo(numero, f"Asignó aviso {etiqueta.lower()} ({dest.name})")
+            self._despues_de_cambio_estado(numero)
+            self.maqueta_widget.set_pagina(pag)
+            self._update_aviso_nombre(pag)
 
         except Exception as e:
             QMessageBox.critical(self, "Asignar aviso", f"Error al asignar el aviso:\n{e}")
@@ -4996,6 +5093,7 @@ class MainWindow(QMainWindow):
         tiene_aviso_half = bool(getattr(pagina, "aviso_half", False))
         tiene_aviso_footer = bool(getattr(pagina, "aviso_footer", False))
         tiene_aviso_roba = bool(getattr(pagina, "aviso_robapagina", False))
+        tiene_aviso_doblemedia = bool(getattr(pagina, "aviso_doblemedia", False))
         tiene_asignada_ini = bool(getattr(pagina, "asignada_por_ini", False))
 
         # "Hay algo" significa: texto o cualquier aviso
@@ -5005,6 +5103,7 @@ class MainWindow(QMainWindow):
             or tiene_aviso_half
             or tiene_aviso_footer
             or tiene_aviso_roba
+            or tiene_aviso_doblemedia
         )
 
         if tiene_asignada_ini and not tiene_algo:
@@ -5027,9 +5126,57 @@ class MainWindow(QMainWindow):
         if getattr(self, "_panel_modo", 0) == 2:
             self.maqueta_widget.set_pagina(pagina)
 
+    def _on_label_aviso_doble_clic(self):
+        """Doble clic en 'Aviso: —' permite ESCRIBIR A MANO el nombre del archivo (sin
+        necesidad de tenerlo aún en disco) — útil cuando se conoce el espacio/anunciante
+        pero todavía no el archivo. Si es doble media, pide superior e inferior."""
+        numero = self.pagina_activa
+        if not numero:
+            return
+        pag = self.controller.gestor_paginas.obtener_pagina(numero)
+        if not pag:
+            return
+        usuario = (self.controller.usuario or "").strip()
+
+        if getattr(pag, "aviso_doblemedia", False):
+            sup, ok = QInputDialog.getText(
+                self, "Aviso doble media — superior",
+                "Nombre del archivo (arriba):", text=getattr(pag, "aviso_nombre", "") or "")
+            if not ok:
+                return
+            inf, ok = QInputDialog.getText(
+                self, "Aviso doble media — inferior",
+                "Nombre del archivo (abajo):", text=getattr(pag, "aviso_nombre2", "") or "")
+            if not ok:
+                return
+            sup, inf = sup.strip(), inf.strip()
+            self.controller.file_service.write_page_entry(
+                numero, aviso_nombre=sup, aviso_nombre2=inf, by=usuario)
+            pag.aviso_nombre, pag.aviso_nombre2 = sup, inf
+        else:
+            nombre, ok = QInputDialog.getText(
+                self, "Nombre del archivo del aviso",
+                "Nombre del archivo:", text=getattr(pag, "aviso_nombre", "") or "")
+            if not ok:
+                return
+            nombre = nombre.strip()
+            self.controller.file_service.set_aviso_nombre(numero, nombre, by=usuario)
+            pag.aviso_nombre = nombre
+
+        self._registrar_trabajo(numero, "Editó nombre de aviso a mano")
+        self.maqueta_widget.set_pagina(pag)
+        self._update_aviso_nombre(pag)
+        # Reintentar resolver/rasterizar el preview con el nombre recién tipeado.
+        QTimer.singleShot(0, self._cargar_avisos_reales_despues_de_pintado)
+
     def _update_aviso_nombre(self, pagina):
         nombre = (getattr(pagina, "aviso_nombre", "") or "").strip()
-        self.label_aviso_nombre.setText(f"Aviso: {nombre if nombre else '—'}")
+        if getattr(pagina, "aviso_doblemedia", False):
+            nombre2 = (getattr(pagina, "aviso_nombre2", "") or "").strip()
+            self.label_aviso_nombre.setText(
+                f"Aviso: {nombre or '—'} / {nombre2 or '—'}")
+        else:
+            self.label_aviso_nombre.setText(f"Aviso: {nombre if nombre else '—'}")
 
     
     def on_cargar_avisos_excel(self):
@@ -5567,7 +5714,7 @@ class MainWindow(QMainWindow):
                 _log.info("Auto P%02d: ya asignada por '%s' → guard 'asignada por otro', se saltea.",
                           numero, by_prev)
                 return False
-            if entry.get("aviso_full", False):
+            if entry.get("aviso_full", False) or entry.get("aviso_doblemedia", False):
                 fs.mark_assigned(numero, txt_name="", by="bot", apagar_aviso_full=False)
             else:
                 txt = fs.obtener_txt(numero)
@@ -5711,6 +5858,8 @@ class MainWindow(QMainWindow):
         seccion_label = (getattr(pagina, "seccion", "") or "").strip()
         if getattr(pagina, "aviso_full", False):
             aviso_label = "Completa"
+        elif getattr(pagina, "aviso_doblemedia", False):
+            aviso_label = "Doble media"
         elif getattr(pagina, "aviso_half", False):
             aviso_label = "Media"
         elif getattr(pagina, "aviso_footer", False):
@@ -5823,7 +5972,8 @@ class MainWindow(QMainWindow):
             asignacion_local = bool(getattr(pagina, "asignada_por_ini", False))
             asignada_cualquiera = bool(getattr(pagina, "asignada_por_ini", False))
             
-            es_completa = bool(getattr(pagina, "aviso_full", False))
+            es_completa = bool(getattr(pagina, "aviso_full", False)
+                              or getattr(pagina, "aviso_doblemedia", False))
             #has_aviso = bool(
             #    entry.get("aviso_full") or
             #    entry.get("aviso_half") or
@@ -6405,7 +6555,7 @@ class MainWindow(QMainWindow):
             try:
                 pagina = self.controller.gestor_paginas.obtener_pagina(numero)
                 entry = self.controller.file_service.read_page_entry(pagina.numero)
-                tiene_aviso = entry.get("aviso_full", False)
+                tiene_aviso = entry.get("aviso_full", False) or entry.get("aviso_doblemedia", False)
                 txt_path = self.controller.file_service.obtener_txt(numero)
                 pagina = self.controller.gestor_paginas.obtener_pagina(numero)
                 # --- CASO 1: página con aviso full ---
@@ -6850,22 +7000,37 @@ class MainWindow(QMainWindow):
             pagina = boton.pagina
             if not pagina:
                 continue
-            if not (getattr(pagina, "aviso_nombre", "") or "").strip():
-                continue
-            try:
-                match = self.controller.file_service.find_aviso_image_for_page(i)
-                if not match:
-                    continue
-                path = Path(match)
-                mtime = path.stat().st_mtime
-                old_path = getattr(pagina, "aviso_path", None)
-                old_mtime = getattr(pagina, "aviso_mtime", None)
-                pagina.aviso_path = match
-                if match != old_path or not old_mtime or mtime != old_mtime or \
-                        getattr(pagina, "aviso_pixmap", None) is None:
-                    tareas.append((i, str(path), mtime))
-            except Exception as e:
-                _log.warning(f"[WARN] aviso P{i:02d}: {e}")
+            if (getattr(pagina, "aviso_nombre", "") or "").strip():
+                try:
+                    match = self.controller.file_service.find_aviso_image_for_page(i)
+                    if match:
+                        path = Path(match)
+                        mtime = path.stat().st_mtime
+                        old_path = getattr(pagina, "aviso_path", None)
+                        old_mtime = getattr(pagina, "aviso_mtime", None)
+                        pagina.aviso_path = match
+                        if match != old_path or not old_mtime or mtime != old_mtime or \
+                                getattr(pagina, "aviso_pixmap", None) is None:
+                            tareas.append((i, str(path), mtime, False))
+                except Exception as e:
+                    _log.warning(f"[WARN] aviso P{i:02d}: {e}")
+
+            # Aviso INFERIOR de una doble media (aviso_nombre2).
+            if getattr(pagina, "aviso_doblemedia", False) and \
+                    (getattr(pagina, "aviso_nombre2", "") or "").strip():
+                try:
+                    match2 = self.controller.file_service.find_aviso_image_for_page(i, segundo=True)
+                    if match2:
+                        path2 = Path(match2)
+                        mtime2 = path2.stat().st_mtime
+                        old_path2 = getattr(pagina, "aviso_path2", None)
+                        old_mtime2 = getattr(pagina, "aviso_mtime2", None)
+                        pagina.aviso_path2 = match2
+                        if match2 != old_path2 or not old_mtime2 or mtime2 != old_mtime2 or \
+                                getattr(pagina, "aviso_pixmap2", None) is None:
+                            tareas.append((i, str(path2), mtime2, True))
+                except Exception as e:
+                    _log.warning(f"[WARN] aviso2 P{i:02d}: {e}")
 
         if not tareas:
             return
@@ -6899,16 +7064,20 @@ class MainWindow(QMainWindow):
     def _on_avisos_cache_listo(self, resultados: dict):
         """Hilo GUI: crea los QPixmap desde los PNG cacheados y repinta los botones."""
         try:
-            for numero, (png_path, mtime) in resultados.items():
+            for (numero, segundo), (png_path, mtime) in resultados.items():
                 pagina = self.controller.gestor_paginas.obtener_pagina(numero)
                 if not pagina:
                     continue
                 pm = QPixmap(png_path)
-                if pm and not pm.isNull():
-                    pagina.aviso_pixmap = pm
-                    pagina.aviso_mtime = mtime
+                ok = bool(pm and not pm.isNull())
+                if segundo:
+                    pagina.aviso_pixmap2 = pm if ok else None
+                    if ok:
+                        pagina.aviso_mtime2 = mtime
                 else:
-                    pagina.aviso_pixmap = None
+                    pagina.aviso_pixmap = pm if ok else None
+                    if ok:
+                        pagina.aviso_mtime = mtime
                 boton = self.boton_paginas.get(numero)
                 if boton:
                     boton.update()
@@ -6946,6 +7115,7 @@ class MainWindow(QMainWindow):
             seccion_pagina = f"{sec} — P{n:02d}"
             tipo = ""
             if getattr(pag, "aviso_full", False):       tipo = "Completa"
+            elif getattr(pag, "aviso_doblemedia", False): tipo = "Doble media"
             elif getattr(pag, "aviso_half", False):     tipo = "Media"
             elif getattr(pag, "aviso_footer", False):   tipo = "Pie"
             elif getattr(pag, "aviso_robapagina", False): tipo = "Robapágina"
