@@ -2162,6 +2162,7 @@ class MainWindow(QMainWindow):
         # Si se abrió algún QXP, ejecutar la maximización de Quark
         if any(a.suffix.lower() == ".qxp" for a in archivos):
             QTimer.singleShot(1200, self._maximizar_quark)
+            self._al_abrir_qxp(numero)
 
 
         # Si se abrió al menos un PDF, activar overlay lector de QR (no bloquea la UI)
@@ -4217,6 +4218,41 @@ class MainWindow(QMainWindow):
         """Abre/cierra el panel de fragmentos (cierra el de aviso si estaba abierto)."""
         target = 0 if getattr(self, "_panel_modo", 0) == 1 else 1
         self._set_panel_modo(target)
+        # Persistir la preferencia SOLO cuando el usuario togglea a mano (no al abrir un qxp).
+        self._guardar_pref_info_noticia()
+
+    def _guardar_pref_info_noticia(self):
+        """Persiste si el panel de info quedó expandido (para restaurarlo en rebuilds de UI)."""
+        try:
+            from PyQt5.QtCore import QSettings
+            QSettings("ArmadorHuarpe", "ArmadorHuarpe").setValue(
+                "ui/info_noticia_expandido", bool(getattr(self, "_info_noticia_expandido", False)))
+        except Exception:
+            pass
+
+    def _pref_info_noticia_expandido(self) -> bool:
+        """Lee la preferencia persistida del panel de info (default: plegado)."""
+        try:
+            from PyQt5.QtCore import QSettings
+            v = QSettings("ArmadorHuarpe", "ArmadorHuarpe").value("ui/info_noticia_expandido", False)
+            return v in (True, "true", "True", 1, "1")
+        except Exception:
+            return False
+
+    def _al_abrir_qxp(self, numero: int):
+        """Al abrir un qxp: expandir SIEMPRE la sección de información (transitorio, sin persistir
+        la preferencia) y, si la página tiene más de una noticia, mostrar un cartel de aviso."""
+        try:
+            self._set_panel_modo(1)
+        except Exception as e:
+            _log.debug("expandir info al abrir qxp P%02d: %s", numero, e)
+        try:
+            n = len(self.controller.file_service.get_noticia_dirs(numero))
+        except Exception:
+            n = 0
+        if n > 1:
+            QTimer.singleShot(0, lambda k=n: QMessageBox.information(
+                self, "Noticias asignadas", f"Esta página tiene {k} noticias asignadas"))
 
     def _toggle_panel_aviso(self):
         """Abre/cierra el panel de aviso (cierra el de fragmentos si estaba abierto)."""
@@ -4313,7 +4349,11 @@ class MainWindow(QMainWindow):
         self.info_scroll.setVisible(True)
         self.tab_info_noticia.setVisible(True)
         self.tab_panel_aviso.setVisible(True)
-        self._plegar_info_noticia()
+        # Restaurar la preferencia del usuario (no forzar plegado siempre).
+        if self._pref_info_noticia_expandido():
+            self._set_panel_modo(1)
+        else:
+            self._plegar_info_noticia()
         self.label_aviso_nombre.setVisible(False)
 
         self.boton_pegar.setText("Pegar en Quark")
@@ -6220,9 +6260,10 @@ class MainWindow(QMainWindow):
             return
 
         QTimer.singleShot(1200, self._maximizar_quark)
+        self._al_abrir_qxp(self.pagina_activa)
 
 
-        
+
     def _on_visor_generar_qr(self, url: str):
         """#11 — genera un QR_NN.png desde un link en la carpeta de la página activa
         y refresca el visor (mismo formato que los QR de la descarga)."""

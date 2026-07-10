@@ -287,6 +287,7 @@ class _DatoCard(QFrame):
         super().__init__(parent)
         self._text = text
         self._edited_text = text
+        self._titulo = ""
         self._limit = limit
         self._is_selected = False
         self.setFrameShape(QFrame.StyledPanel)
@@ -324,7 +325,10 @@ class _DatoCard(QFrame):
 
     def update_display(self):
         t = self._edited_text
-        self.lbl.setText(t if len(t) <= 110 else t[:107] + "…")
+        base = t if len(t) <= 110 else t[:107] + "…"
+        if self._titulo:
+            base = f"{self._titulo}  ·  {base}"
+        self.lbl.setText(base)
         self.lbl.setStyleSheet("border: none; background: transparent;")
         n = len(t)
         if n > self._limit:
@@ -339,6 +343,13 @@ class _DatoCard(QFrame):
     def set_edited_text(self, text: str):
         self._edited_text = text
         self.update_display()
+
+    def set_titulo(self, titulo: str):
+        self._titulo = (titulo or "").strip()
+        self.update_display()
+
+    def get_data(self) -> dict:
+        return {"titulo": self._titulo.strip(), "texto": self._edited_text.strip()}
 
     def set_selected(self, val: bool):
         self._is_selected = val
@@ -465,13 +476,18 @@ class _NumeroEditDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class _DatoEditDialog(QDialog):
-    def __init__(self, text: str = "", limit: int = 120, parent=None):
+    def __init__(self, text: str = "", limit: int = 120, titulo: str = "", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Editar dato")
         self.setMinimumWidth(420)
 
         lay = QVBoxLayout(self)
         lay.setSpacing(8)
+
+        lay.addWidget(QLabel("Título:"))
+        self._ed_titulo = QLineEdit(titulo)
+        self._ed_titulo.setPlaceholderText("Ej: El dato")
+        lay.addWidget(self._ed_titulo)
 
         lay.addWidget(QLabel("Texto del dato destacado:"))
         self._ed = QPlainTextEdit(text)
@@ -489,8 +505,11 @@ class _DatoEditDialog(QDialog):
 
         self._cnt.update_count(text)
 
-    def get_result(self) -> str:
-        return self._ed.toPlainText().strip()
+    def get_result(self) -> dict:
+        return {
+            "titulo": self._ed_titulo.text().strip(),
+            "texto": self._ed.toPlainText().strip(),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1021,8 +1040,8 @@ class EditorNotaWindow(QMainWindow):
         lay_fr.setContentsMargins(4, 4, 4, 4)
         lay_fr.setSpacing(6)
 
-        lbl_fr_desc = QLabel("Seleccioná fragmentos del cuerpo y sumá sus caracteres. "
-                             "Las selecciones se acumulan (no se cuentan dos veces).")
+        lbl_fr_desc = QLabel("Arrastrá una selección en el cuerpo: el conteo se calcula al instante. "
+                             "Usá «Agregar selección» para sumar otro tramo no contiguo.")
         lbl_fr_desc.setWordWrap(True)
         lbl_fr_desc.setStyleSheet("color: rgba(255,255,255,0.45); font-size: 11px;")
         lay_fr.addWidget(lbl_fr_desc)
@@ -1162,6 +1181,8 @@ class EditorNotaWindow(QMainWindow):
             )
             panel.ed_bajada.textChanged.connect(self._on_bajada_changed)
             panel.ed_cuerpo.textChanged.connect(self._on_cuerpo_changed)
+            # "Contar caracteres" en vivo: al arrastrar la selección, recalcular el conteo.
+            panel.ed_cuerpo.selectionChanged.connect(self._on_frag_live_changed)
             self._arrow_overlay = _SelectionArrowOverlay(
                 panel.ed_cuerpo, on_click=self._scroll_body_to_highlight
             )
@@ -1441,8 +1462,12 @@ class EditorNotaWindow(QMainWindow):
         txt = self._stories[0].ed_cuerpo.toPlainText()
         if self._hl_cuerpo is not None:
             self._hl_cuerpo.schedule_check(txt)
-        # Editar el cuerpo corre los rangos de los fragmentos → se reinician (con aviso).
-        if getattr(self, "_frag_ranges", None):
+        # Solo una edición REAL del texto reinicia los fragmentos. El interlineado
+        # (apply_line_spacing → mergeBlockFormat) emite textChanged SIN cambiar el texto:
+        # comparar el texto plano evita borrar los fragmentos por ese reformateo.
+        prev = getattr(self, "_cuerpo_snapshot", None)
+        self._cuerpo_snapshot = txt
+        if prev is not None and txt != prev and getattr(self, "_frag_ranges", None):
             self._frag_ranges = []
             self._refrescar_fragmentos_ui()
             self._lbl_frag_limite.setText(
@@ -1542,10 +1567,11 @@ class EditorNotaWindow(QMainWindow):
         limit = self._mq.get("dato_limit", 120)
         dlg = _DatoEditDialog("", limit, parent=self)
         if dlg.exec_() == dlg.Accepted:
-            new_text = dlg.get_result()
-            if new_text:
-                card = _DatoCard(new_text, limit)
-                card.set_edited_text(new_text)
+            r = dlg.get_result()
+            if r["texto"]:
+                card = _DatoCard(r["texto"], limit)
+                card.set_edited_text(r["texto"])
+                card.set_titulo(r["titulo"])
                 card.selected.connect(lambda t, c=card: self._on_dato_card_selected(t, c))
                 card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
                 self._dato_lay_cards.insertWidget(0, card)
@@ -1554,11 +1580,13 @@ class EditorNotaWindow(QMainWindow):
                 self._recalcular_deduccion()
 
     def _on_dato_card_dbl_clicked(self, card: "_DatoCard"):
-        dlg = _DatoEditDialog(card._edited_text, self._mq.get("dato_limit", 120), parent=self)
+        dlg = _DatoEditDialog(card._edited_text, self._mq.get("dato_limit", 120),
+                              titulo=card._titulo, parent=self)
         if dlg.exec_() == dlg.Accepted:
-            new_text = dlg.get_result()
-            if new_text:
-                card.set_edited_text(new_text)
+            r = dlg.get_result()
+            if r["texto"]:
+                card.set_edited_text(r["texto"])
+                card.set_titulo(r["titulo"])
                 for c in self._dato_cards:
                     if c is not card:
                         c.set_selected(False)
@@ -1679,11 +1707,13 @@ class EditorNotaWindow(QMainWindow):
                 _log.warning("[EDITOR] P%02d: tipo de textual '%s' sin textuales seleccionados"
                              " → no se propaga al JSON.", self.numero, tipo)
 
-        # Dato
+        # Dato: {titulo, texto} (título → Box1125, texto → Box1126). Solo si hay texto.
         dato = None
         for c in self._dato_cards:
             if c._is_selected:
-                dato = c._edited_text.strip() or None
+                nd = c.get_data()
+                if nd["texto"]:
+                    dato = {"titulo": nd["titulo"], "texto": nd["texto"]}
                 break
 
         # Número
@@ -1712,6 +1742,9 @@ class EditorNotaWindow(QMainWindow):
             "numero": numero,
             "qr_path": str(self._qr_path) if self._qr_path else None,
             "foto_tipo": self._cb_foto_tipo.currentText(),
+            # Marca de nota editada por el usuario: el chrome_watcher NO debe sobrescribir
+            # una nota con editado=true (si no, se perdería la config al re-bajar/re-empujar).
+            "editado": True,
         })
         try:
             json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1838,14 +1871,22 @@ class EditorNotaWindow(QMainWindow):
                 self._textual_cards.set_tipo(tipo)
             self._textual_cards.restore_saved(textual)
 
-        # Dato
-        dato = data.get("dato") or ""
-        if dato:
+        # Dato: dict {titulo, texto} (nuevo) o string plano (legacy → sin título).
+        dato_raw = data.get("dato")
+        if isinstance(dato_raw, dict):
+            dato_titulo = (dato_raw.get("titulo") or "").strip()
+            dato_texto = (dato_raw.get("texto") or "").strip()
+        elif isinstance(dato_raw, str):
+            dato_titulo, dato_texto = "", dato_raw.strip()
+        else:
+            dato_titulo, dato_texto = "", ""
+        if dato_texto:
             limit = self._mq.get("dato_limit", 120)
             matched = False
             for card in self._dato_cards:
-                if card._text == dato or card._edited_text == dato:
-                    card.set_edited_text(dato)
+                if card._text == dato_texto or card._edited_text == dato_texto:
+                    card.set_edited_text(dato_texto)
+                    card.set_titulo(dato_titulo)
                     card.set_selected(True)
                     for c in self._dato_cards:
                         if c is not card:
@@ -1853,8 +1894,9 @@ class EditorNotaWindow(QMainWindow):
                     matched = True
                     break
             if not matched:
-                card = _DatoCard(dato, limit)
-                card.set_edited_text(dato)
+                card = _DatoCard(dato_texto, limit)
+                card.set_edited_text(dato_texto)
+                card.set_titulo(dato_titulo)
                 card.selected.connect(lambda t, c=card: self._on_dato_card_selected(t, c))
                 card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
                 self._dato_lay_cards.insertWidget(0, card)
@@ -2267,6 +2309,25 @@ class EditorNotaWindow(QMainWindow):
         """Criterio del contador del cuerpo: caracteres CON espacios, sin saltos de línea."""
         return len(texto.replace("\u2029", "").replace("\n", "").strip())
 
+    def _frag_rangos_efectivos(self) -> list:
+        """Fragmentos acumulados + la selección viva actual del cuerpo (para el conteo en vivo)."""
+        rangos = list(self._frag_ranges)
+        if self._stories:
+            cur = self._stories[0].ed_cuerpo.textCursor()
+            if cur.hasSelection():
+                rangos = rangos + [(cur.selectionStart(), cur.selectionEnd())]
+        return self._fusionar_rangos(rangos)
+
+    def _on_frag_live_changed(self):
+        """Conteo en vivo mientras se arrastra la selección: solo activo en la pestaña
+        'Contar caracteres' (los fragmentos acumulados + la selección actual se cuentan juntos)."""
+        if not self._stories:
+            return
+        if self._right_tabs.widget(self._right_tabs.currentIndex()) is not getattr(
+                self, "_tab_fragmentos", None):
+            return
+        self._actualizar_conteo_fragmentos()
+
     def _agregar_fragmento(self, start: int, end: int):
         if end <= start:
             return
@@ -2325,7 +2386,7 @@ class EditorNotaWindow(QMainWindow):
         panel = self._stories[0]
         body = panel.ed_cuerpo.toPlainText()
         total = self._contar_chars(body)
-        seleccionado = sum(self._contar_chars(body[s:e]) for s, e in self._frag_ranges)
+        seleccionado = sum(self._contar_chars(body[s:e]) for s, e in self._frag_rangos_efectivos())
         no_seleccionado = max(0, total - seleccionado)
         limite = panel.limite_efectivo_cuerpo()
 

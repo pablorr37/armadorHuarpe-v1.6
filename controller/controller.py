@@ -1799,7 +1799,12 @@ class ArmadorController:
                     comp["textual_nombre"] = (tx.get("nombre1") or "").strip()
                     comp["textual_cargo"] = (tx.get("cargo1") or "").strip()
                 dato = nd.get("dato")
-                comp["dato"] = bool(dato.strip()) if isinstance(dato, str) else bool(dato)
+                if isinstance(dato, dict):
+                    comp["dato"] = bool((dato.get("texto") or "").strip())
+                elif isinstance(dato, str):
+                    comp["dato"] = bool(dato.strip())
+                else:
+                    comp["dato"] = bool(dato)
                 comp["numero"] = bool(nd.get("numero"))
                 comp["foto_tipo"] = (nd.get("foto_tipo") or "").strip()
                 comp["firma"] = bool(nd.get("firma_habilitada"))

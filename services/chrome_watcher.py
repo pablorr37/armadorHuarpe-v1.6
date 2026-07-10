@@ -337,6 +337,22 @@ class ChromeWatcher(QObject):
         nn       = f"{pagina:02d}"
         _log.info("Chrome _process P%02d: rol=%s → sufijo=%s → %s", pagina, rol, sufijo, dest_dir.name)
 
+        # Guard: si la nota ya fue editada por el usuario (editado=true en su JSON), NO se
+        # sobrescribe con la versión de la extensión (perderíamos textuales/dato/número curados).
+        # Se marca el _pending como copiado para no reprocesarlo en cada poll.
+        existing_json = dest_dir / f"{nn}{sufijo}.json"
+        if existing_json.exists():
+            try:
+                prev_json = json.loads(existing_json.read_text(encoding="utf-8"))
+            except Exception:
+                prev_json = {}
+            if prev_json.get("editado"):
+                _log.info("P%02d '%s' editada por el usuario (editado=true) → el watcher NO la sobrescribe.",
+                          pagina, rol)
+                data["copiado"] = True
+                pending_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                return
+
         # Sobrescribir el slot: limpiar contenido previo de esa carpeta
         for old in list(dest_dir.iterdir()):
             try:

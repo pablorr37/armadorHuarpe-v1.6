@@ -684,7 +684,14 @@ function setImagenEnBox(boxName, filePath) {
       }
 
       if (nota.dato) {
-        setTextoEnBox("Box1126", cleanHTML(nota.dato));
+        if (typeof nota.dato === "string") {
+          // Formato legacy: dato como texto plano.
+          setTextoEnBox("Box1126", cleanHTML(nota.dato));
+        } else {
+          // Formato nuevo: {titulo, texto} → título en Box1125, texto en Box1126.
+          if (nota.dato.titulo) setTextoEnBox("Box1125", cleanHTML(nota.dato.titulo));
+          if (nota.dato.texto)  setTextoEnBox("Box1126", cleanHTML(nota.dato.texto));
+        }
       }
 
       var num = nota.numero;
