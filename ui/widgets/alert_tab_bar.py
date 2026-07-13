@@ -100,8 +100,9 @@ class AlertTabBar(QTabBar):
 class AlertTabWidget(QTabWidget):
     """QTabWidget con AlertTabBar instalado. Exponer `alert_bar` para set_alert/shake.
 
-    Los labels con espacios (p. ej. "Contar caracteres") pasan a dos líneas (wordwrap)
-    cuando el tab bar no entra en el ancho, y vuelven a una cuando sobra lugar."""
+    Los labels quedan en UNA línea; si no entran en el ancho, el desborde se navega con
+    las flechas ‹ › del tab bar (se prioriza el scroll sobre el wrapping a dos líneas,
+    que hacía oscilar la aparición de las flechas)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,15 +114,11 @@ class AlertTabWidget(QTabWidget):
         self._ajustar_labels_largos()
 
     def _ajustar_labels_largos(self):
+        # Se prioriza el scroll (flechas ‹ ›) sobre el wrapping a dos líneas: el wrapping
+        # cambiaba el ancho/alto del bar y hacía aparecer/desaparecer las flechas
+        # (apelotonamiento). Los labels quedan en UNA línea y el desborde usa las flechas.
         bar = self.alert_bar
         for i in range(bar.count()):
             actual = bar.tabText(i)
-            plano = actual.replace("\n", " ")
-            if " " not in plano:
-                continue
-            envuelto = "\n" in actual
-            if not envuelto and bar.sizeHint().width() > self.width():
-                bar.setTabText(i, plano.replace(" ", "\n", 1))
-            elif envuelto and bar.sizeHint().width() + 60 < self.width():
-                # Margen anti-oscilación: desenvuelve solo con lugar de sobra.
-                bar.setTabText(i, plano)
+            if "\n" in actual:
+                bar.setTabText(i, actual.replace("\n", " "))

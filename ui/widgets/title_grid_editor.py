@@ -160,6 +160,30 @@ class TitleGridEditor(QWidget):
         r = self._sel_range()
         return self._text[r[0]:r[1]] if r else ""
 
+    # -----------------------------------------------------------------------
+    # Navegación por palabra (Ctrl+←/→) — misma regla de borde que el doble clic
+    # -----------------------------------------------------------------------
+    _WORD_SEP = " \t\n"
+
+    def _next_word(self, pos: int) -> int:
+        """Inicio de la palabra siguiente: salta el resto de la palabra actual y los espacios."""
+        n = len(self._text)
+        i = max(0, min(pos, n))
+        while i < n and self._text[i] not in self._WORD_SEP:
+            i += 1
+        while i < n and self._text[i] in self._WORD_SEP:
+            i += 1
+        return i
+
+    def _prev_word(self, pos: int) -> int:
+        """Inicio de la palabra anterior: salta espacios a la izquierda y luego la palabra."""
+        i = max(0, min(pos, len(self._text)))
+        while i > 0 and self._text[i - 1] in self._WORD_SEP:
+            i -= 1
+        while i > 0 and self._text[i - 1] not in self._WORD_SEP:
+            i -= 1
+        return i
+
     def _delete_selection(self) -> None:
         """Borra el texto seleccionado y ajusta cursor. Empuja undo."""
         r = self._sel_range()
@@ -240,7 +264,14 @@ class TitleGridEditor(QWidget):
 
         # ── Flechas ──────────────────────────────────────────────────────────
         if key == Qt.Key_Left:
-            if shift:
+            if ctrl:
+                # Ctrl+← salta al inicio de la palabra anterior; con Shift, selecciona.
+                if shift and self._sel_anchor is None:
+                    self._sel_anchor = self._cursor
+                elif not shift:
+                    self._sel_anchor = None
+                self._cursor = self._prev_word(self._cursor)
+            elif shift:
                 if self._sel_anchor is None:
                     self._sel_anchor = self._cursor
                 if self._cursor > 0:
@@ -256,7 +287,14 @@ class TitleGridEditor(QWidget):
             return
 
         if key == Qt.Key_Right:
-            if shift:
+            if ctrl:
+                # Ctrl+→ salta al inicio de la palabra siguiente; con Shift, selecciona.
+                if shift and self._sel_anchor is None:
+                    self._sel_anchor = self._cursor
+                elif not shift:
+                    self._sel_anchor = None
+                self._cursor = self._next_word(self._cursor)
+            elif shift:
                 if self._sel_anchor is None:
                     self._sel_anchor = self._cursor
                 if self._cursor < len(self._text):

@@ -1605,7 +1605,7 @@ class EditorNotaWindow(QMainWindow):
 
         def _tiene_contenido(p) -> bool:
             return bool(p.ed_cuerpo.toPlainText().strip()
-                        or " ".join(p.title_grid.get_lines()).strip())
+                        or p.title_grid.text().strip())
 
         # Paneles a guardar: con path existente, o nuevos (spinner) con contenido.
         # A los nuevos se les crea la carpeta del rol que les corresponde (02a/02b/02c…).
@@ -1674,7 +1674,10 @@ class EditorNotaWindow(QMainWindow):
                 data = json.loads(json_path.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
-        titulo = " ".join(ln.strip() for ln in panel.title_grid.get_lines() if ln.strip())
+        # Título desde el texto plano: los cortes por columna NO son caracteres en el texto
+        # (van pegados), y solo los saltos reales (Enter) separan con espacio. Así un corte
+        # mid-word ("ejempl|o") no inyecta un espacio ("ejempl o").
+        titulo = " ".join(seg.strip() for seg in panel.title_grid.text().split("\n") if seg.strip())
 
         # Textual
         tipo_label = self._cb_textual_tipo.currentText()
@@ -2803,14 +2806,20 @@ class EditorNotaWindow(QMainWindow):
                 background: rgba(231,136,95,0.20);
                 color: #e7885f;
             }}
-            /* Flechas ‹ › del tab bar cuando las pestañas no entran en el ancho. */
+            /* Flechas ‹ › del tab bar cuando las pestañas no entran en el ancho.
+               Fondo opaco + tamaño explícito para que la flecha (dibujada por Qt) se
+               vea y no queden botones casi transparentes y apelotonados. */
+            QTabBar::scroller {{ width: 44px; }}
             QTabBar QToolButton {{
-                background: rgba(255,255,255,0.10);
-                border: 1px solid rgba(255,255,255,0.18);
+                background: #2b3a4f;
+                border: 1px solid rgba(255,255,255,0.30);
                 border-radius: 4px;
+                min-width: 20px;
+                margin: 1px;
             }}
-            QTabBar QToolButton:hover {{ background: rgba(231,136,95,0.35); }}
-            QTabBar QToolButton:disabled {{ background: rgba(255,255,255,0.03); }}
+            QTabBar QToolButton:hover {{ background: #e7885f; border-color: #e7885f; }}
+            QTabBar QToolButton:pressed {{ background: #c96a41; }}
+            QTabBar QToolButton:disabled {{ background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.10); }}
             QFrame {{
                 border: 1px solid rgba(255,255,255,0.10);
                 background: rgba(255,255,255,0.04);
