@@ -960,6 +960,53 @@ class PoolTreeWidget(QtWidgets.QTreeWidget):
         drag.setMimeData(mime)
         drag.exec_(QtCore.Qt.CopyAction)
 
+
+class _CartelNoticias(QWidget):
+    """Cartel flotante (frameless, siempre encima) para avisar SOBRE Quark. Ocupa solo su
+    propio rect — no bloquea el resto de la pantalla, a diferencia del overlay de QR que
+    captura todos los clics. Se cierra con 'Aceptar'."""
+
+    def __init__(self, texto: str):
+        from PyQt5.QtCore import Qt as _Qt
+        super().__init__(None, _Qt.FramelessWindowHint | _Qt.WindowStaysOnTopHint | _Qt.Tool)
+        self.setAttribute(_Qt.WA_TranslucentBackground, True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        card = QWidget(self)
+        card.setObjectName("cartelCard")
+        outer.addWidget(card)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(24, 18, 24, 16)
+        lay.setSpacing(12)
+        lbl = QLabel(texto, card)
+        lbl.setWordWrap(True)
+        lbl.setAlignment(_Qt.AlignCenter)
+        lbl.setStyleSheet("color:#fff; font-size:15px; font-weight:600; background:transparent;")
+        lay.addWidget(lbl)
+        btn = QPushButton("Aceptar", card)
+        btn.setCursor(_Qt.PointingHandCursor)
+        btn.clicked.connect(self.close)
+        btn.setStyleSheet(
+            "QPushButton { background:#fff; color:#c25a1e; border:none; border-radius:6px;"
+            " padding:6px 28px; font-weight:700; }"
+            " QPushButton:hover { background:#ffe9dc; }")
+        row = QHBoxLayout()
+        row.addStretch(1); row.addWidget(btn); row.addStretch(1)
+        lay.addLayout(row)
+        card.setStyleSheet(
+            "#cartelCard { background:#e07a30; border:2px solid #ffb27a; border-radius:14px; }")
+
+    def show_sobre_quark(self):
+        self.adjustSize()
+        try:
+            geo = QApplication.primaryScreen().geometry()
+            self.move(geo.center().x() - self.width() // 2, geo.top() + 70)
+        except Exception:
+            pass
+        self.show()
+        self.raise_()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, controller: ArmadorController):
         super().__init__()
@@ -4251,8 +4298,10 @@ class MainWindow(QMainWindow):
         except Exception:
             n = 0
         if n > 1:
-            QTimer.singleShot(0, lambda k=n: QMessageBox.information(
-                self, "Noticias asignadas", f"Esta página tiene {k} noticias asignadas"))
+            # Cartel flotante SOBRE Quark (un QMessageBox quedaba oculto tras Quark maximizado).
+            # Se muestra tras la maximización de Quark (~1200 ms) para quedar por encima.
+            self._cartel_noticias = _CartelNoticias(f"Esta página tiene {n} noticias asignadas")
+            QTimer.singleShot(1500, self._cartel_noticias.show_sobre_quark)
 
     def _toggle_panel_aviso(self):
         """Abre/cierra el panel de aviso (cierra el de fragmentos si estaba abierto)."""
