@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QLabel, QLineEdit, QPlainTextEdit,
     QPushButton, QMessageBox, QAction, QMenuBar, QShortcut,
     QTabWidget, QComboBox, QFrame, QSizePolicy, QSpinBox,
-    QDialog, QDialogButtonBox,
+    QDialog, QDialogButtonBox, QCheckBox,
 )
 from PyQt5.QtGui import QKeySequence, QTextCursor, QTextCharFormat, QColor, QPainter, QPainterPath, QFont
 
@@ -1064,6 +1064,13 @@ class EditorNotaWindow(QMainWindow):
         self._frag_scroll.setWidget(self._frag_container)
         lay_fr.addWidget(self._frag_scroll, 1)
 
+        # Pinta el cuerpo con un tinte desde el inicio hasta el punto donde se alcanza el
+        # límite cce de la maqueta (hasta dónde entra el texto), y el excedente en rojo.
+        self._chk_pintar_limite = QCheckBox("Pintar el cuerpo hasta el límite")
+        self._chk_pintar_limite.setStyleSheet("color: #cbd5e1; font-size: 12px;")
+        self._chk_pintar_limite.toggled.connect(lambda _=False: self._aplicar_extra_selections())
+        lay_fr.addWidget(self._chk_pintar_limite)
+
         self._btn_frag_limpiar = QPushButton("Limpiar todo")
         self._btn_frag_limpiar.setCursor(Qt.PointingHandCursor)
         self._btn_frag_limpiar.clicked.connect(self._on_frag_limpiar)
@@ -1236,9 +1243,17 @@ class EditorNotaWindow(QMainWindow):
             "titulo_chars_linea": mq.get("titulo_breve_chars", 44),
             "titulo_sin_espacio": True,
         })
+        # Principal con DOS noticias: usa el valor propio de la maqueta (más chico, porque la
+        # 2ª noticia ocupa parte del box). Vacío → cae al cuerpo_limit normal (1 noticia).
+        limits_principal = limits
+        if len(self._stories) > 1:
+            dobles = mq.get("cuerpo_principal_dobles_limit")
+            if dobles:
+                limits_principal = dict(limits)
+                limits_principal["cuerpo_limit"] = dobles
         for panel in self._stories:
             es_secundaria = getattr(panel, "_story_index", 0) >= 1
-            panel.apply_limits(limits_breve if es_secundaria else limits)
+            panel.apply_limits(limits_breve if es_secundaria else limits_principal)
 
     def _on_story_type_changed(self, story_index: int, story_type: str):
         maqueta = self._cb_maqueta.currentText()
@@ -1472,6 +1487,8 @@ class EditorNotaWindow(QMainWindow):
             self._refrescar_fragmentos_ui()
             self._lbl_frag_limite.setText(
                 "Las selecciones se reinician al editar el cuerpo.")
+        # Refrescar el tinte "hasta el límite" (el corte se corre al editar).
+        self._aplicar_extra_selections()
 
     # ------------------------------------------------------------------
     # Swap
@@ -1543,6 +1560,8 @@ class EditorNotaWindow(QMainWindow):
 
         for panel in self._stories:
             panel.set_external_deduction(total)
+        # El límite efectivo cambió → refrescar el tinte "hasta el límite".
+        self._aplicar_extra_selections()
 
     def _aplicar_sin_foto_ui(self, sin_foto: bool):
         """'Sin foto' deshabilita el epígrafe de cada noticia y la carga de fotos de página."""
@@ -2110,6 +2129,7 @@ class EditorNotaWindow(QMainWindow):
         # Al entrar a "Contar caracteres", refrescar conteos (el límite pudo cambiar).
         if self._right_tabs.widget(nuevo) is getattr(self, "_tab_fragmentos", None):
             self._actualizar_conteo_fragmentos()
+            self._aplicar_extra_selections()
 
     def _bloqueo_textuales(self) -> bool:
         """True si hay alerta bloqueante: enfoca la pestaña, sacude y avisa."""
@@ -2424,13 +2444,67 @@ class EditorNotaWindow(QMainWindow):
             sels.append(sel)
         return sels
 
+    @staticmethod
+    def _pos_para_limite_cce(body: str, limite: int) -> int:
+        """Índice de documento donde el conteo cce (con espacios, sin saltos, sin whitespace
+        inicial — criterio de _contar_chars) alcanza `limite`. Devuelve len(body) si no llega."""
+        count = 0
+        started = False
+        for i, ch in enumerate(body):
+            if ch in ("\n", " "):
+                continue
+            if not started:
+                if ch.isspace():
+                    continue
+                started = True
+            count += 1
+            if count >= limite:
+                return i + 1
+        return len(body)
+
+    def _limit_paint_extra_selections(self, panel):
+        """Tinte del cuerpo: verde tenue desde el inicio hasta el punto de corte del límite cce
+        de la maqueta, y rojo tenue el excedente. Activado por el checkbox 'Pintar hasta el límite'."""
+        if not getattr(self, "_chk_pintar_limite", None) or not self._chk_pintar_limite.isChecked():
+            return []
+        limite = panel.limite_efectivo_cuerpo()
+        if limite <= 0:
+            return []
+        from PyQt5.QtWidgets import QTextEdit
+        editor = panel.ed_cuerpo
+        body = editor.toPlainText()
+        pos = self._pos_para_limite_cce(body, limite)
+        sels = []
+        fmt_ok = QTextCharFormat()
+        fmt_ok.setBackground(QColor(90, 188, 138, 45))
+        c = QTextCursor(editor.document())
+        c.setPosition(0)
+        c.setPosition(pos, QTextCursor.KeepAnchor)
+        s = QTextEdit.ExtraSelection()
+        s.format = fmt_ok
+        s.cursor = c
+        sels.append(s)
+        if pos < len(body):
+            fmt_over = QTextCharFormat()
+            fmt_over.setBackground(QColor(255, 107, 107, 55))
+            c2 = QTextCursor(editor.document())
+            c2.setPosition(pos)
+            c2.setPosition(len(body), QTextCursor.KeepAnchor)
+            s2 = QTextEdit.ExtraSelection()
+            s2.format = fmt_over
+            s2.cursor = c2
+            sels.append(s2)
+        return sels
+
     def _aplicar_extra_selections(self):
-        """Compone en una sola lista el highlight celeste de recursos + naranja de fragmentos."""
+        """Compone: tinte de límite (fondo) + highlight celeste de recursos + naranja de fragmentos."""
         if not self._stories:
             return
-        editor = self._stories[0].ed_cuerpo
+        panel = self._stories[0]
+        editor = panel.ed_cuerpo
         recursos = list(getattr(self, "_resource_extra_sels", []) or [])
-        editor.setExtraSelections(recursos + self._frag_extra_selections(editor))
+        editor.setExtraSelections(
+            self._limit_paint_extra_selections(panel) + recursos + self._frag_extra_selections(editor))
 
     # ------------------------------------------------------------------
     # Corrección: acciones globales

@@ -56,6 +56,10 @@ class Config:
             "volanta_limit":            "90",
             "titulo_lineas":            "2",
             "titulo_chars_linea":       "38",
+            # Cuerpo de la principal cuando la página lleva DOS noticias: la principal ocupa
+            # una caja más chica (la 2ª noticia toma parte del box). Vacío → usa cuerpo_limit
+            # (retrocompatible). Calibrable por maqueta en [MAQUETA:<nombre>].
+            "cuerpo_principal_dobles_limit": "",
             # Noticia secundaria (breve): cuerpo según maqueta con pie / vacía y
             # titulador de una sola línea contando sin espacios.
             "cuerpo_secundaria_pie_limit":   "630",
