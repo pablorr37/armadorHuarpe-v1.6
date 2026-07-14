@@ -5809,8 +5809,19 @@ class MainWindow(QMainWindow):
             indice = 0
             frags = self.controller.obtener_fragmentos(numero, indice) or []
             texto = "\n".join(frags).strip()
+            # Subfolder de la nota PRINCIPAL (donde viven sus fotos seleccionadas). El flujo
+            # manual usa el subfolder activo; el auto lo deriva de get_notas para no leer las
+            # fotos en la carpeta equivocada (subfolder=None daba foto_cant=0).
+            subfolder = None
+            try:
+                for _nota in self.controller.file_service.get_notas(numero):
+                    if (_nota.get("rol") or "").lower() == "principal":
+                        subfolder = _nota["dir"].name
+                        break
+            except Exception:
+                subfolder = None
             self.controller.pegar_en_quark(numero, indice, texto=texto,
-                                           subfolder=None, excluir_fotos=False)
+                                           subfolder=subfolder, excluir_fotos=False)
             qxp = self.controller.file_service.mejor_qxp_para_pegar(numero)
             if not (qxp and qxp.exists()):
                 _log.warning("Auto P%02d: no hay qxp para abrir.", numero)
@@ -5821,6 +5832,10 @@ class MainWindow(QMainWindow):
             if not (quark_exe and Path(quark_exe).exists()):
                 _log.error("Auto P%02d: no se encontró el ejecutable de Quark 2018.", numero)
                 return False
+            # Modo automático: dejar el flag para que PegarNota v6 (al dispararlo el bot con el
+            # único clic) guarde y cierre el proyecto y avise por armado_status.json.
+            from controller.auto_mode import marcar_auto_pendiente
+            marcar_auto_pendiente(numero)
             subprocess.Popen([quark_exe, str(qxp)], shell=False)
             self.controller.marcar_pegadas(numero, None, texto)
             return True

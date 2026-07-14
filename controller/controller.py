@@ -1852,6 +1852,12 @@ class ArmadorController:
         aviso = comp.get("aviso_tipo") or ""
         geo: dict = {}
 
+        # --- Nota SIN foto (decisión editorial: foto_tipo == "Sin foto"): el JS borra las
+        #     cajas de foto y epígrafe. NO se basa en foto_cant (que puede ser 0 transitorio
+        #     aunque la nota lleve foto), para no borrar una nota que sí debe llevar foto. ---
+        if "sin" in (comp.get("foto_tipo") or "").lower():
+            geo["sin_foto"] = True
+
         # --- Foto a 3 columnas / ancha / 4 col: ancho + alto (misma lógica que
         #     _redimensionar_foto3 en auto_mode). Delta sobre el borde, no depende del origen. ---
         var = foto3_variante(comp)
@@ -1859,17 +1865,38 @@ class ArmadorController:
             if var == "4col":
                 ancho = self._valor_mm("foto_a_4col", seccion, aviso)
                 alto = self._valor_mm("foto_al_4col", seccion, aviso)
+                # 4col además MUEVE la foto (no sólo la redimensiona).
+                fx = self._valor_mm("foto_x_4col", seccion, aviso)
+                fy = self._valor_mm("foto_y_4col", seccion, aviso)
             else:
                 ancho = self._valor_mm("foto_a", seccion, aviso)
                 alto = self._valor_mm(
                     "foto_al_wide" if var == "wide" else "foto_al_ancha", seccion, aviso)
+                fx = fy = None   # wide/ancha: sólo redimensiona
             foto = {}
             if ancho is not None:
                 foto["ancho_mm"] = ancho
             if alto is not None:
                 foto["alto_mm"] = alto
+            if fx is not None:
+                foto["x_mm"] = fx
+            if fy is not None:
+                foto["y_mm"] = fy
             if foto:
                 geo["foto"] = foto
+
+            # --- Epígrafe (Box368/504/1866): posición + tamaño según la variante de foto. ---
+            epi = {}
+            ex = self._valor_mm(f"epi_x_{var}", seccion, aviso)
+            ey = self._valor_mm(f"epi_y_{var}", seccion, aviso)
+            ea = self._valor_mm(f"epi_a_{var}", seccion, aviso)
+            eal = self._valor_mm(f"epi_al_{var}", seccion, aviso)
+            if ex is not None:  epi["x_mm"] = ex
+            if ey is not None:  epi["y_mm"] = ey
+            if ea is not None:  epi["ancho_mm"] = ea
+            if eal is not None: epi["alto_mm"] = eal
+            if epi:
+                geo["epigrafe"] = epi
 
         # --- Recursos movibles activos con X/Y calibrados (posición absoluta en mm de página). ---
         recursos: dict = {}

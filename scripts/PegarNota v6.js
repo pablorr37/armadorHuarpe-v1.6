@@ -74,6 +74,7 @@
     var UNIVERSAL_AVISO = ["Box1988", "Box1995", "Box1999"];
     var FOTO_BOXES      = ["Box369", "Box505", "Box1867"];
     var PIE_FOTO_BOXES  = FOTO_BOXES;
+    var EPI_BOXES       = ["Box368", "Box504", "Box1866"];  // epígrafe por plantilla
 
     // Estructura de boxes de la maqueta universal
     var UNIVERSAL = {
@@ -134,6 +135,7 @@
     var _fotoPathTried = "";
     var _geoDiag       = [];   // diagnóstico de geometría (foto + grupos)
     var _clonesAgregados = 0;  // cuántas cajas nuevas (clones a plantillas 2/3) se agregaron
+    var _cajasBorradas   = 0;  // cuántas cajas se borraron (nota sin foto)
 
     // =========================================================
     // 🔹 HELPERS GENERALES
@@ -400,6 +402,56 @@
       box.setAttribute("style", style);
     }
 
+    // Mueve una caja SÓLO en X (mantiene Y y tamaño). Para invertir folio/fecha en página par.
+    function moverXCaja(boxName, xMM) {
+      var box = getPicBoxByName(boxName);
+      if (!box) return;
+      var st = box.getAttribute("style");
+      if (!st) return;
+      var l = _bordeMM(st, "left"), r = _bordeMM(st, "right");
+      if (l === null || r === null) return;
+      var w = r - l;
+      st = _setBordeMM(st, "left",  xMM);
+      st = _setBordeMM(st, "right", xMM + w);
+      box.setAttribute("style", st);
+    }
+
+    // Cambia la alineación del texto (--qx-text-align en el/los qx-p de la caja).
+    function alinearCaja(boxName, align) {
+      var box = qxBoxByName(boxName);
+      if (!box) return;
+      var ps = box.getElementsByTagName("qx-p");
+      for (var i = 0; i < ps.length; i++) {
+        var st = ps[i].getAttribute("style") || "";
+        if (/--qx-text-align:[^;]+;?/.test(st)) st = st.replace(/--qx-text-align:[^;]+;?/, "--qx-text-align:" + align + ";");
+        else st = "--qx-text-align:" + align + ";" + st;
+        ps[i].setAttribute("style", st);
+      }
+    }
+
+    // Nota SIN foto: borrar las cajas de foto y epígrafe de las 3 plantillas (removeChild).
+    function borrarSiSinFoto() {
+      if (!geometria.sin_foto) return;
+      var borrar = FOTO_BOXES.concat(EPI_BOXES);   // Box369/505/1867 + Box368/504/1866
+      for (var i = 0; i < borrar.length; i++) {
+        var box = getPicBoxByName(borrar[i]);
+        if (box && box.parentNode) {
+          try { box.parentNode.removeChild(box); _cajasBorradas++; }
+          catch (e) { _geoDiag.push("borrar ERROR [" + borrar[i] + "]: " + e); }
+        }
+      }
+      _geoDiag.push("sin_foto: borradas=" + _cajasBorradas + " de " + borrar.join(","));
+    }
+
+    // Página PAR: invertir folio y fecha (posición + alineación).
+    function invertirFolioFechaSiPar() {
+      if (!(numeroPagina % 2 === 0)) return;
+      var FOLIO = ["Box366", "Box1852", "Box1865"];   // x → 10, align izquierda
+      var FECHA = ["Box1183", "Box1850", "Box1864"];  // x → 140,528, align derecha
+      for (var f = 0; f < FOLIO.length; f++) { moverXCaja(FOLIO[f], 10);      alinearCaja(FOLIO[f], "left"); }
+      for (var d = 0; d < FECHA.length; d++) { moverXCaja(FECHA[d], 140.528); alinearCaja(FECHA[d], "right"); }
+    }
+
     // Mueve un GRUPO completo (lista de box-name) de modo que la esquina sup-izq del
     // bounding-box del grupo quede en (xMM, yMM) — igual que el panel de medidas de Quark
     // con el grupo seleccionado. El DOM es plano y no expone grupos, así que se desplaza
@@ -510,9 +562,10 @@
     // atributos de `orig` (menos box-name), fijando la página, y clonando adentro sólo el
     // CONTENIDO (qx-story / qx-img). cloneNode del box entero no lo registra Quark.
     function crearCajaDesde(orig, pag, shiftX, shiftY) {
-      // cloneNode(true) copia FIELMENTE contenido + estilos (alineación, fuente, formato).
-      // Sólo hay que quitar los identificadores (box-id/uid los genera Quark; box-name debe ser
-      // único) para que Quark no descarte el clon por ID duplicado.
+      // cloneNode(true) copia FIELMENTE contenido + estilos. Quitar los identificadores de la
+      // caja (box-id/uid los genera Quark; box-name debe ser único) para que no la descarte por
+      // ID duplicado. (Nota: Quark no aplica la alineación/italic del párrafo a cajas creadas por
+      // DOM aunque el estilo esté presente — limitación aceptada.)
       var nueva = orig.cloneNode(true);
       try { nueva.removeAttribute("box-id"); }   catch (e0) {}
       try { nueva.removeAttribute("box-uid"); }  catch (e1) {}
@@ -574,16 +627,6 @@
             var destino = _destino || orig.parentNode || layout;
             destino.appendChild(nueva);
             _clonesAgregados++;
-            // Diagnóstico de contenido por caja: ¿se copió el texto/imagen?
-            var _oTxt = "", _cTxt = "";
-            try { _oTxt = (orig.textContent || "").replace(/\s+/g, " ").substring(0, 30); } catch (e0) {}
-            try { _cTxt = (nueva.textContent || "").replace(/\s+/g, " ").substring(0, 30); } catch (e1) {}
-            var _oImg = orig.getElementsByTagName("qx-img").length;
-            var _cImg = nueva.getElementsByTagName("qx-img").length;
-            _geoDiag.push("  contenido [" + _bn + "] tipo=" +
-                          (orig.getAttribute("box-content-type") || "?") +
-                          " origTxt='" + _oTxt + "' clonTxt='" + _cTxt + "'" +
-                          " origImg=" + _oImg + " clonImg=" + _cImg + " hijos=" + orig.childNodes.length);
             if (!_diagHecho) {
               var os = orig.getAttribute("style");
               var cs = nueva.getAttribute("style");
@@ -641,9 +684,11 @@
 
     var _appdataScripts = "C:/Users/usuario/AppData/Roaming/ArmadorHuarpe/scripts/";
     var rutaJSON = "";
+    var esAuto   = false;   // modo automático (disparado por startup.js): guarda+cierra al final
     try {
       var _cfg = JSON.parse(fs.readFileSync(_appdataScripts + "runtime_config.json", "utf8").trim());
       rutaJSON = (_cfg.data_pagina_path || "").replace(/\\/g, "/");
+      esAuto = (_cfg.auto === true);
     } catch (e) {
       alert("PegarNota: error leyendo runtime_config.json:\n" + e);
       return;
@@ -768,7 +813,19 @@
       // izquierdo/superior → no depende del origen de coordenadas.
       if (geometria.foto) {
         for (var g = 0; g < FOTO_BOXES.length; g++) {
+          // Si viene x/y (caso 4 columnas), primero mover la foto a esa posición on-page.
+          if (geometria.foto.x_mm !== undefined && geometria.foto.y_mm !== undefined) {
+            moverCaja(FOTO_BOXES[g], geometria.foto.x_mm, geometria.foto.y_mm);
+          }
           redimensionarCaja(FOTO_BOXES[g], geometria.foto.ancho_mm, geometria.foto.alto_mm);
+        }
+      }
+      // Epígrafe (Box368/504/1866): posición + tamaño según foto_tipo.
+      if (geometria.epigrafe) {
+        var _epiG = geometria.epigrafe;
+        for (var e = 0; e < EPI_BOXES.length; e++) {
+          if (_epiG.x_mm !== undefined && _epiG.y_mm !== undefined) moverCaja(EPI_BOXES[e], _epiG.x_mm, _epiG.y_mm);
+          redimensionarCaja(EPI_BOXES[e], _epiG.ancho_mm, _epiG.alto_mm);
         }
       }
 
@@ -944,6 +1001,8 @@
       // Firma y epígrafe
       setTextoEnBox(UNIVERSAL.firma,    firmaCorta);
       setTextoEnBox(UNIVERSAL.epigrafe, epigrafe);
+      // Nota: los box de epígrafe por plantilla (Box368/504/1866) NO se rellenan con texto acá;
+      // sólo se mueven/redimensionan (pegarFotoPrincipal) o se borran (borrarSiSinFoto).
 
       // Avisos
       pegarAvisosEnSeccion(seccionNorm);
@@ -966,6 +1025,12 @@
 
       // Textuales / dato / número / QR
       if (notaPrincipal) pegarTextualDatoNumero(notaPrincipal);
+
+      // Página par: invertir folio y fecha (posición + alineación), al final.
+      invertirFolioFechaSiPar();
+
+      // Nota sin foto: borrar cajas de foto y epígrafe.
+      borrarSiSinFoto();
     }
 
     // =========================================================
@@ -1030,10 +1095,31 @@
       fs.writeFileSync(_appdataScripts + "geo_diag.txt", _diagTxt, "utf8");
     } catch (eD) {}
 
-    // Commit SOLO si se agregaron cajas nuevas (clones a plantillas 2/3). Las operaciones
-    // DOM son asíncronas: el saveProject se difiere con Promise para que el appendChild se
-    // aplique ANTES de guardar (el guardado síncrono corría antes de que el clon se registrara).
-    if (_clonesAgregados > 0) {
+    if (esAuto) {
+      // MODO AUTOMÁTICO (disparado por startup.js): guardar → cerrar proyecto → dejar el flag
+      // de salida (armado_status.json) y limpiar `auto` del runtime_config. Se encadena con
+      // demoras porque las operaciones DOM/proyecto son asíncronas.
+      try {
+        setTimeout(function () {
+          try { app.activeProject().saveProject(); } catch (e1) {}
+          setTimeout(function () {
+            try { app.activeProject().closeProject(); } catch (e2) {}
+            // Flag de salida para Python.
+            try {
+              fs.writeFileSync(_appdataScripts + "armado_status.json",
+                JSON.stringify({ armado_auto: true, numero: numeroPagina }), "utf8");
+            } catch (e3) {}
+            // Limpiar `auto` para que reabrir el proyecto no re-dispare el pegado.
+            try {
+              var _c = JSON.parse(fs.readFileSync(_appdataScripts + "runtime_config.json", "utf8").trim());
+              _c.auto = false;
+              fs.writeFileSync(_appdataScripts + "runtime_config.json", JSON.stringify(_c), "utf8");
+            } catch (e4) {}
+          }, 1500);
+        }, 300);
+      } catch (eA) {}
+    } else if (_clonesAgregados > 0 || _cajasBorradas > 0) {
+      // Manual con cajas nuevas/borradas: guardar diferido (las ops DOM son asíncronas).
       try {
         Promise.resolve().then(function () {
           try { app.activeProject().saveProject(); } catch (e2) {}

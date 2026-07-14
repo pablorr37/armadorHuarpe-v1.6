@@ -108,8 +108,13 @@ VALORES_DEFAULT = {
     # residual del src negativo. Las fotos usan 0.
     "deletes_recurso": "2",
     "foto_a": "129,574", "foto_al_wide": "69,467", "foto_al_ancha": "82,166",
-    # Foto a 4 columnas: A y Al propios (más ancha y más alta). Vacíos hasta calibrar.
-    "foto_a_4col": "", "foto_al_4col": "",
+    # Foto a 4 columnas: posición propia (x/y) + tamaño (A/Al). 4col mueve Y redimensiona.
+    "foto_a_4col": "174,577", "foto_al_4col": "82,166",
+    "foto_x_4col": "10,424", "foto_y_4col": "63,334",
+    # Epígrafe (Box368/504/1866): posición + tamaño por variante de foto (x/y/a/al).
+    "epi_x_wide": "55,427", "epi_y_wide": "132,801", "epi_a_wide": "129,575", "epi_al_wide": "10,723",
+    "epi_x_ancha": "55,427", "epi_y_ancha": "145,806", "epi_a_ancha": "129,573", "epi_al_ancha": "10,723",
+    "epi_x_4col": "10,424", "epi_y_4col": "145,806", "epi_a_4col": "174,576", "epi_al_4col": "10,723",
     # X/Y = posición DESEADA (esquina sup-izq del grupo) en la página, maqueta VACÍA (sin aviso).
     # Son el destino final que debe quedar en la página. moverGrupo (PegarNota v6) le suma la
     # compensación del pasteboard (COMP_X/COMP_Y). El bot los usa directo en el panel de medidas.

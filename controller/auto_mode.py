@@ -18,9 +18,12 @@ La preparación en disco (asignar + pegar + abrir Quark) corre en el hilo GUI
 """
 from __future__ import annotations
 
+import os
+import json
 import time
 import logging
 import threading
+from pathlib import Path
 from collections import deque
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
@@ -46,6 +49,50 @@ CANCELADO = "cancelado"            # kill-switch Esc×5: abortar y apagar
 # Kill-switch: cuántos Esc en cuánto tiempo.
 ESC_N = 5
 ESC_LAPSO = 1.0   # s
+
+# ── Flags de auto-pegado por JS (archivos en %APPDATA%/ArmadorHuarpe/scripts/) ──
+# Entrada  (Python→JS): runtime_config.json {"auto": true, "numero": N}.
+# Salida   (JS→Python): armado_status.json  {"armado_auto": true, "numero": N} tras guardar+cerrar.
+def _prod_scripts_dir() -> Path:
+    return Path(os.getenv("APPDATA", "")) / "ArmadorHuarpe" / "scripts"
+
+
+def marcar_auto_pendiente(numero: int) -> None:
+    """Antes de abrir Quark: setea auto=true+numero en runtime_config.json y borra un
+    armado_status.json viejo, para que PegarNota v6 (al dispararlo el bot) guarde y cierre."""
+    d = _prod_scripts_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        cfg_p = d / "runtime_config.json"
+        try:
+            cfg = json.loads(cfg_p.read_text(encoding="utf-8")) if cfg_p.exists() else {}
+        except Exception:
+            cfg = {}
+        cfg["auto"] = True
+        cfg["numero"] = int(numero)
+        cfg_p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        _limpiar_armado_status()
+    except Exception as e:
+        _log.warning("marcar_auto_pendiente P%02d: %s", numero, e)
+
+
+def _leer_armado_status(numero: int) -> bool:
+    """True si el JS ya escribió armado_status.json para esta página (guardó y cerró)."""
+    p = _prod_scripts_dir() / "armado_status.json"
+    try:
+        if p.exists():
+            st = json.loads(p.read_text(encoding="utf-8"))
+            return bool(st.get("armado_auto")) and int(st.get("numero", -1)) == int(numero)
+    except Exception:
+        pass
+    return False
+
+
+def _limpiar_armado_status() -> None:
+    try:
+        (_prod_scripts_dir() / "armado_status.json").unlink()
+    except Exception:
+        pass
 MAX_REINTENTOS_FOCO = 3   # por página
 MAX_PAGINAS_FALLO_FOCO = 2  # si 2 páginas distintas fallan el foco → apagar
 MAX_REINTENTOS_PEGADO = 3   # por página: si no se detecta el pegado 3 veces → error
@@ -141,41 +188,35 @@ class _PaginaWorker(QThread):
             a.esperar_y_cerrar_dialogo_fuentes(timeout=4.0)
             a.esperar(0.4)
 
-            # Zoom: dejar el documento al zoom con el que se calibró (valor editable, default 11).
-            # Si NO se pudo confirmar, se omiten los pasos para no tocar elementos equivocados.
-            zoom_ok = a.set_zoom(self.calib.get("zoom"), self.calib.get("zoom_valor") or ZOOM_ARMADO)
-
-            # c) Pegado base con el script dedicado.
-            self.paso.emit(f"P{n:02d}: corriendo el pegado…")
+            # c) ÚNICO paso pyautogui: clic al script (PegarNota v6) + Play en el palette.
+            #    A partir de acá, el JS hace TODO: pega, geometría (foto/recursos/clones/
+            #    epígrafes) y, en modo auto, GUARDA y CIERRA el proyecto; luego escribe el
+            #    flag armado_status.json. Python solo espera ese flag y minimiza.
+            _limpiar_armado_status()  # descartar un flag viejo
+            self.paso.emit(f"P{n:02d}: disparando el pegado (JS hace todo)…")
             if not a.click_script_y_play(self.coord_script, self.coord_play,
                                          espera=self.espera_pegado):
                 self.terminado.emit(n, ERROR)
                 return
 
-            # El Play es un evento lanzado desde Python: puede disparar el cartel de fuentes.
-            # (La detección del cartel 'Pegado finalizado' quedó DESCONECTADA: no se usa hoy.)
-            a.esperar_y_cerrar_dialogo_fuentes(timeout=3.0)
+            # Esperar a que el JS termine (guardó + cerró + escribió el flag). Mientras tanto,
+            # limpiar carteles de fuentes que pudieran bloquear el guardado.
+            self.paso.emit(f"P{n:02d}: esperando que el JS guarde y cierre…")
+            _t0 = time.time()
+            _ok = False
+            while time.time() - _t0 < 90.0:
+                a.esperar_y_cerrar_dialogo_fuentes(timeout=0.5)
+                if _leer_armado_status(n):
+                    _ok = True
+                    break
+                a.esperar(0.5)
+            if not _ok:
+                _log.warning("P%02d: timeout esperando armado_status.json (el JS no terminó).", n)
+                self.terminado.emit(n, ERROR)
+                return
 
-            # Guard: sin zoom confirmado, los arrastres calibrados caerían en el lugar
-            # equivocado → se OMITEN los movimientos (la página queda pegada para terminar a mano).
-            if not zoom_ok:
-                self.paso.emit(f"P{n:02d}: zoom sin confirmar → se omite mover recursos (manual).")
-                _log.warning("P%02d: zoom sin confirmar → se omite mover recursos (manual).", n)
-            else:
-                # El bot NO pega firma ni epígrafe: corre el script, redimensiona la foto y
-                # coloca los recursos por X/Y en el panel.
-                # 1) FOTO a 3 columnas (wide/ancha) PRIMERO: cambiar de plantilla reacomoda la
-                #    vista y perdería la calibración espacial de la foto.
-                self._redimensionar_foto3(a)
-                # 2) Recursos: por cada plantilla (1/2/3), escribir el selector y colocar por X/Y.
-                self._colocar_recursos_xy(a)
-
-            self.paso.emit(f"P{n:02d}: guardando y cerrando…")
-            a.esperar_y_cerrar_dialogo_fuentes(timeout=1.5)  # limpiar cartel antes de guardar
-            a.guardar()
-            a.esperar_y_cerrar_dialogo_fuentes(timeout=2.0)  # el guardado también puede dispararlo
-            a.cerrar()
-            a.minimizar_quark()
+            a.minimizar_quark()          # ctypes/Win32 (no pyautogui)
+            _limpiar_armado_status()
             self.terminado.emit(n, OK)
         except CanceladoError:
             _log.info("Worker P%02d cancelado por el usuario (Esc×5).", n)
