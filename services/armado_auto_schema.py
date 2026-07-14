@@ -110,10 +110,13 @@ VALORES_DEFAULT = {
     "foto_a": "129,574", "foto_al_wide": "69,467", "foto_al_ancha": "82,166",
     # Foto a 4 columnas: A y Al propios (más ancha y más alta). Vacíos hasta calibrar.
     "foto_a_4col": "", "foto_al_4col": "",
-    "textual_x": "55,074", "textual_y": "148,5",
-    "dato_x": "", "dato_y": "",
-    "numero_x": "", "numero_y": "",
-    "qr_x": "", "qr_y": "",
+    # X/Y = posición DESEADA (esquina sup-izq del grupo) en la página, maqueta VACÍA (sin aviso).
+    # Son el destino final que debe quedar en la página. moverGrupo (PegarNota v6) le suma la
+    # compensación del pasteboard (COMP_X/COMP_Y). El bot los usa directo en el panel de medidas.
+    "textual_x": "54,926", "textual_y": "147,089",
+    "dato_x": "99,7", "dato_y": "147,089",
+    "numero_x": "143,794", "numero_y": "147,089",
+    "qr_x": "149,023", "qr_y": "255,543",
 }
 
 # Claves de valor que dependen del recurso Y del tipo de aviso (posiciones X/Y). El resto de

@@ -1816,17 +1816,74 @@ class ArmadorController:
             _log.debug("composicion_pagina P%02d: %s", numero, e)
         return comp
 
-    def _box_positions_para_js(self) -> dict:
-        """P6a (spike): mapea box-name → posición destino (coords de PANTALLA calibradas) para
-        que el JS pruebe mover cajas. Test inicial: Box427 (textual simple) → 'textual_dst_1'."""
-        pos = {}
+    @staticmethod
+    def _valor_mm(clave: str, seccion: str, aviso: str):
+        """Resuelve un valor numérico calibrable (mm) por la cascada sección+aviso →
+        universal, con fallback al default del schema, y lo devuelve como float.
+        Parsea coma decimal ('129,574' → 129.574). None si vacío/ inválido.
+        Misma resolución que usa el bot en _auto_calibracion (main_window)."""
+        from services.armado_auto_schema import claves_cascada, valor_default
+        raw = None
+        for k in claves_cascada(seccion, aviso, clave):
+            raw = config_global.auto_valor(k)
+            if raw:
+                break
+        if not raw:
+            raw = valor_default(clave)
+        if not raw:
+            return None
         try:
-            p = config_global.auto_centro("textual_dst_1")
-            if p:
-                pos["Box427"] = {"x": int(p[0]), "y": int(p[1])}
-        except Exception:
-            pass
-        return pos
+            return float(str(raw).strip().replace(",", "."))
+        except (ValueError, TypeError):
+            return None
+
+    def _geometria_para_js(self, comp: dict) -> dict:
+        """Geometría en mm de documento para que PegarNota v6 la aplique directo al DOM:
+          {"foto": {"ancho_mm", "alto_mm"}, "recursos": {"<rol>": {"x_mm", "y_mm"}}}
+        Los valores salen de la calibración (config.ini [AUTO] + defaults del schema),
+        resueltos por la cascada sección+aviso. Los box-name los resuelve el JS.
+          - 'foto' sólo si foto_tipo es 3col/ancha/4col (foto3_variante) y hay valores.
+          - 'recursos' sólo los activos (recurso_activo) con X/Y calibrados."""
+        from services.armado_auto_schema import (
+            foto3_variante, recurso_activo, RECURSOS_MOVIBLES,
+        )
+        comp = comp or {}
+        seccion = comp.get("seccion") or ""
+        aviso = comp.get("aviso_tipo") or ""
+        geo: dict = {}
+
+        # --- Foto a 3 columnas / ancha / 4 col: ancho + alto (misma lógica que
+        #     _redimensionar_foto3 en auto_mode). Delta sobre el borde, no depende del origen. ---
+        var = foto3_variante(comp)
+        if var:
+            if var == "4col":
+                ancho = self._valor_mm("foto_a_4col", seccion, aviso)
+                alto = self._valor_mm("foto_al_4col", seccion, aviso)
+            else:
+                ancho = self._valor_mm("foto_a", seccion, aviso)
+                alto = self._valor_mm(
+                    "foto_al_wide" if var == "wide" else "foto_al_ancha", seccion, aviso)
+            foto = {}
+            if ancho is not None:
+                foto["ancho_mm"] = ancho
+            if alto is not None:
+                foto["alto_mm"] = alto
+            if foto:
+                geo["foto"] = foto
+
+        # --- Recursos movibles activos con X/Y calibrados (posición absoluta en mm de página). ---
+        recursos: dict = {}
+        for rec in RECURSOS_MOVIBLES:
+            if not recurso_activo(comp, rec):
+                continue
+            x = self._valor_mm(f"{rec}_x", seccion, aviso)
+            y = self._valor_mm(f"{rec}_y", seccion, aviso)
+            if x is not None and y is not None:
+                recursos[rec] = {"x_mm": x, "y_mm": y}
+        if recursos:
+            geo["recursos"] = recursos
+
+        return geo
 
     def _preparar_data_pagina(self, numero: int, tiene_texto: bool = True,
                                subfolder: Optional[str] = None,
@@ -2041,6 +2098,7 @@ class ArmadorController:
             except Exception as e:
                 _log.debug("No se pudo derivar fecha de edición P%02d: %s", numero, e)
 
+            comp = self.composicion_pagina(numero, subfolder)
             data = {
                 "numero_pagina":      numero,
                 "seccion":            seccion,
@@ -2052,11 +2110,11 @@ class ArmadorController:
                 "avisos":             avisos,
                 "fotos":              fotos_data,
                 "notas":              notas_data,
-                "composicion":        self.composicion_pagina(numero, subfolder),
+                "composicion":        comp,
                 "foto_box_principal": config_global.maqueta_config.get("foto_box_principal", "Box369"),
-                # P6a (spike): posiciones destino (coords de pantalla calibradas) para que el JS
-                # intente mover cajas. Test inicial: Box427 (textual solo) → 'textual_dst_1'.
-                "box_positions":      self._box_positions_para_js(),
+                # Geometría en mm (foto: ancho/alto; recursos: X/Y) para que PegarNota v6 la
+                # aplique directo al DOM de Quark. Vacío si no hay foto3 ni recursos calibrados.
+                "geometria":          self._geometria_para_js(comp),
             }
 
             ruta_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
