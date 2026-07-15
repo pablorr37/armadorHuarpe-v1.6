@@ -58,6 +58,17 @@ class TextualCardsView(QWidget):
         self._limits["epigrafe"] = int(epigrafe)
         self.refresh()
 
+    def get_state(self) -> list[dict]:
+        """Snapshot completo de los candidatos (para cachear por noticia al cambiar de
+        pestaña de historia — ver EditorNotaWindow._snapshot_recursos)."""
+        return [dict(c) for c in self._candidates]
+
+    def set_state(self, candidates: list[dict]):
+        """Restaura un snapshot de get_state(). NO emite `changed` — el llamador decide
+        cuándo refrescar deducción/resaltado tras restaurar (evita recálculos duplicados)."""
+        self._candidates = [dict(c) for c in candidates]
+        self.refresh()
+
     def set_candidates(self, texts: list[str]):
         self._candidates = []
         for t in texts:

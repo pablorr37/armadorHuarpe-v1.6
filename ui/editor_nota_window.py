@@ -743,6 +743,12 @@ class EditorNotaWindow(QMainWindow):
         self._highlight_source: str = ""  # "textual", "dato", "numero"
         self._arrow_overlay: _SelectionArrowOverlay | None = None
 
+        # Recursos (foto/textual/dato/número/QR) independientes POR NOTICIA: los widgets
+        # de la derecha son compartidos (una sola instancia), pero su estado se cachea por
+        # índice de noticia y se recarga al cambiar de pestaña (ver _on_story_switch).
+        self._active_res_idx = 0
+        self._res_cache: dict[int, dict] = {}
+
         self.setWindowTitle(f"Editor de nota — Página {numero}")
         self._pagina = None
         self.showMaximized()
@@ -1152,6 +1158,7 @@ class EditorNotaWindow(QMainWindow):
         self._btn_sel_cancel.clicked.connect(
             lambda: self._on_sel_mode_cancel("textual"))
         self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
+        self._story_tabs.currentChanged.connect(self._on_story_switch)
 
         sc = QShortcut(QKeySequence("Ctrl+S"), self)
         sc.activated.connect(self._on_guardar)
@@ -1168,6 +1175,12 @@ class EditorNotaWindow(QMainWindow):
     # Gestión de pestañas de noticias
     # ------------------------------------------------------------------
 
+    def _active_story(self) -> "StoryPanel":
+        """La noticia cuyos recursos (foto/textual/dato/número) muestran/editan los tabs
+        de la derecha ahora mismo — sigue a la pestaña de noticia activa (_story_tabs)."""
+        idx = self._active_res_idx if self._active_res_idx < len(self._stories) else 0
+        return self._stories[idx] if self._stories else None
+
     def _add_story_panel(self, story_index: int) -> StoryPanel:
         panel = StoryPanel(story_index, self._mq)
         label = "Principal" if story_index == 0 else f"Noticia {story_index + 1}"
@@ -1176,6 +1189,16 @@ class EditorNotaWindow(QMainWindow):
         panel.body_display_changed.connect(self._on_body_display_changed)
         # La rueda dentro del cuerpo también gobierna el colapso del bloque superior.
         panel.ed_cuerpo.viewport().installEventFilter(self)
+
+        # Cuerpo/bajada de TODAS las noticias alimentan la detección de recursos, el
+        # conteo de caracteres y el pintado del límite — todo eso sigue a la noticia
+        # ACTIVA (self._active_story()), sea cual sea el índice. La corrección ortográfica
+        # (_hl_bajada/_hl_cuerpo) queda deliberadamente acotada a la PRINCIPAL (índice 0):
+        # no es parte de "recursos por noticia" y evita rehacer el corrector por pestaña.
+        panel.ed_bajada.textChanged.connect(lambda p=panel: self._on_bajada_changed(p))
+        panel.ed_cuerpo.textChanged.connect(lambda p=panel: self._on_cuerpo_changed(p))
+        # "Contar caracteres" en vivo: al arrastrar la selección, recalcular el conteo.
+        panel.ed_cuerpo.selectionChanged.connect(lambda p=panel: self._on_frag_live_changed(p))
 
         if story_index == 0:
             panel.ed_bajada.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1186,10 +1209,6 @@ class EditorNotaWindow(QMainWindow):
             panel.ed_cuerpo.customContextMenuRequested.connect(
                 lambda pos, p=panel: self._show_spell_menu(p.ed_cuerpo, self._hl_cuerpo, pos)
             )
-            panel.ed_bajada.textChanged.connect(self._on_bajada_changed)
-            panel.ed_cuerpo.textChanged.connect(self._on_cuerpo_changed)
-            # "Contar caracteres" en vivo: al arrastrar la selección, recalcular el conteo.
-            panel.ed_cuerpo.selectionChanged.connect(self._on_frag_live_changed)
             self._arrow_overlay = _SelectionArrowOverlay(
                 panel.ed_cuerpo, on_click=self._scroll_body_to_highlight
             )
@@ -1210,6 +1229,7 @@ class EditorNotaWindow(QMainWindow):
         while len(self._stories) > count:
             self._story_tabs.removeTab(len(self._stories) - 1)
             self._stories.pop()
+            self._res_cache.pop(len(self._stories), None)
         self._btn_swap.setVisible(count >= 2)
         self._apply_all_story_limits()
 
@@ -1260,6 +1280,212 @@ class EditorNotaWindow(QMainWindow):
         story_count = self._sb_noticias.value()
         config_global.save_story_type(maqueta, self._seccion, story_count, story_index, story_type)
         self._apply_all_story_limits()
+
+    # ------------------------------------------------------------------
+    # Recursos (foto/textual/dato/número/QR) por noticia
+    # ------------------------------------------------------------------
+
+    def _snapshot_recursos(self) -> dict:
+        """Estado actual de los widgets de recurso COMPARTIDOS (una sola instancia para
+        todas las noticias). Se cachea por índice de noticia al cambiar de pestaña/guardar."""
+        return {
+            "foto_tipo": self._cb_foto_tipo.currentText(),
+            "textual_tipo_label": self._cb_textual_tipo.currentText(),
+            "textual_state": self._textual_cards.get_state(),
+            "dato_cards": [
+                {"text": c._text, "edited_text": c._edited_text, "titulo": c._titulo,
+                 "selected": c._is_selected}
+                for c in self._dato_cards
+            ],
+            "numero": dict(self._numero_card.get_data(), selected=self._numero_card._is_selected),
+            "qr_path": str(self._qr_path) if self._qr_path else None,
+        }
+
+    def _load_recursos(self, model: dict) -> None:
+        """Puebla los widgets de recurso compartidos desde un dict de _snapshot_recursos."""
+        model = model or {}
+        tipo_map = {
+            "simple": "simple", "x2": "x2", "x3": "x3",
+            "con foto": "con_foto", "con foto XL": "con_foto_xl",
+        }
+
+        # Foto
+        idx_foto = self._cb_foto_tipo.findText(model.get("foto_tipo") or "")
+        self._cb_foto_tipo.blockSignals(True)
+        self._cb_foto_tipo.setCurrentIndex(idx_foto if idx_foto >= 0 else 0)
+        self._cb_foto_tipo.blockSignals(False)
+
+        # Textual
+        self._textual_cards.set_state(model.get("textual_state") or [])
+        label = model.get("textual_tipo_label") or "—"
+        idx_tx = self._cb_textual_tipo.findText(label)
+        self._cb_textual_tipo.blockSignals(True)
+        self._cb_textual_tipo.setCurrentIndex(idx_tx if idx_tx >= 0 else 0)
+        self._cb_textual_tipo.blockSignals(False)
+        self._textual_cards.set_tipo(tipo_map.get(label))
+
+        # Dato: se reconstruyen las cards (mismo patrón que _populate_dato_cards).
+        while self._dato_lay_cards.count() > 1:
+            item = self._dato_lay_cards.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._dato_cards = []
+        limit = self._mq.get("dato_limit", 120)
+        for cd in (model.get("dato_cards") or []):
+            card = _DatoCard(cd.get("text", ""), limit)
+            card.set_edited_text(cd.get("edited_text") or cd.get("text", ""))
+            card.set_titulo(cd.get("titulo", ""))
+            card.selected.connect(lambda t, c=card: self._on_dato_card_selected(t, c))
+            card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
+            self._dato_lay_cards.insertWidget(self._dato_lay_cards.count() - 1, card)
+            self._dato_cards.append(card)
+            if cd.get("selected"):
+                card.set_selected(True)
+
+        # Número
+        nd = model.get("numero") or {}
+        self._numero_card.set_data(nd.get("cabecera", ""), nd.get("texto", ""))
+        self._numero_card.set_selected(bool(nd.get("selected")))
+
+        # QR
+        qr = model.get("qr_path")
+        self._qr_path = Path(qr) if qr else None
+
+    def _auto_detect_para(self, panel: "StoryPanel") -> None:
+        """Detecta candidatos de textual/dato desde el cuerpo de `panel` y puebla los
+        widgets compartidos (sin restaurar lo guardado — ver _restore_saved_fields_para)."""
+        body = panel.ed_cuerpo.toPlainText()
+        cands = self._detector.detect(body) if body.strip() else []
+        self._textual_cards.set_candidates([c.text for c in cands])
+        datos = self._detect_datos(body) if body.strip() else []
+        self._populate_dato_cards(datos)
+
+    def _restore_saved_fields_para(self, panel: "StoryPanel") -> None:
+        """Restaura textual/dato/número/QR/foto_tipo del JSON de `panel` sobre los widgets
+        compartidos (candidatos ya poblados por _auto_detect_para). Misma lógica que la
+        vieja _restore_saved_fields, generalizada a cualquier noticia."""
+        if not panel or not panel._txt_path:
+            return
+        json_path = panel._txt_path.with_suffix(".json")
+        if not json_path.exists():
+            return
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        # Textual tipo y selecciones
+        textual = data.get("textual")
+        if textual and textual.get("tipo"):
+            tipo = textual["tipo"]
+            label_map = {
+                "simple": "simple", "x2": "x2", "x3": "x3",
+                "con_foto": "con foto", "con_foto_xl": "con foto XL",
+            }
+            label = label_map.get(tipo, "—")
+            idx = self._cb_textual_tipo.findText(label)
+            if idx >= 0:
+                self._cb_textual_tipo.blockSignals(True)
+                self._cb_textual_tipo.setCurrentIndex(idx)
+                self._cb_textual_tipo.blockSignals(False)
+                self._textual_cards.set_tipo(tipo)
+            self._textual_cards.restore_saved(textual)
+
+        # Dato: dict {titulo, texto} (nuevo) o string plano (legacy → sin título).
+        dato_raw = data.get("dato")
+        if isinstance(dato_raw, dict):
+            dato_titulo = (dato_raw.get("titulo") or "").strip()
+            dato_texto = (dato_raw.get("texto") or "").strip()
+        elif isinstance(dato_raw, str):
+            dato_titulo, dato_texto = "", dato_raw.strip()
+        else:
+            dato_titulo, dato_texto = "", ""
+        if dato_texto:
+            limit = self._mq.get("dato_limit", 120)
+            matched = False
+            for card in self._dato_cards:
+                if card._text == dato_texto or card._edited_text == dato_texto:
+                    card.set_edited_text(dato_texto)
+                    card.set_titulo(dato_titulo)
+                    card.set_selected(True)
+                    for c in self._dato_cards:
+                        if c is not card:
+                            c.set_selected(False)
+                    matched = True
+                    break
+            if not matched:
+                card = _DatoCard(dato_texto, limit)
+                card.set_edited_text(dato_texto)
+                card.set_titulo(dato_titulo)
+                card.selected.connect(lambda t, c=card: self._on_dato_card_selected(t, c))
+                card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
+                self._dato_lay_cards.insertWidget(0, card)
+                self._dato_cards.insert(0, card)
+                card.set_selected(True)
+
+        # Número
+        numero = data.get("numero")
+        if isinstance(numero, dict):
+            cab = numero.get("cabecera", "") or ""
+            num_txt = numero.get("texto", "") or ""
+            self._numero_card.set_data(cab, num_txt)
+            if cab or num_txt:
+                self._numero_card.set_selected(True)
+
+        # QR
+        qr_path_str = data.get("qr_path")
+        if qr_path_str:
+            qr = Path(qr_path_str)
+            if qr.exists():
+                self._qr_path = qr
+                self._fotos_browser.set_qr_path(qr)
+
+        # Tipo de foto
+        foto_tipo = (data.get("foto_tipo") or "2 columnas").strip()
+        if foto_tipo == "3 columnas wide":   # legacy: renombrado a "3 columnas"
+            foto_tipo = "3 columnas"
+        idx = self._cb_foto_tipo.findText(foto_tipo)
+        if idx >= 0:
+            self._cb_foto_tipo.blockSignals(True)
+            self._cb_foto_tipo.setCurrentIndex(idx)
+            self._cb_foto_tipo.blockSignals(False)
+
+    def _on_story_switch(self, new_idx: int) -> None:
+        """Cambio de pestaña de noticia: cachea el estado de recursos de la saliente y
+        carga (o detecta por primera vez) el de la entrante. Re-apunta el overlay de
+        flecha al cuerpo de la noticia activa."""
+        if new_idx < 0 or new_idx >= len(self._stories):
+            return
+        old_idx = self._active_res_idx
+        if old_idx == new_idx and old_idx in self._res_cache:
+            return
+        if self._stories:
+            self._res_cache[old_idx] = self._snapshot_recursos()
+        self._active_res_idx = new_idx
+        panel = self._active_story()
+
+        if self._arrow_overlay is not None and panel is not None:
+            self._arrow_overlay.hide()
+            self._arrow_overlay.setParent(panel.ed_cuerpo)
+
+        model = self._res_cache.get(new_idx)
+        if model is None:
+            # Primera vez que se visita esta noticia en esta sesión del editor: detectar
+            # candidatos desde SU cuerpo y restaurar lo guardado en SU propio JSON.
+            self._auto_detect_para(panel)
+            self._restore_saved_fields_para(panel)
+            self._res_cache[new_idx] = self._snapshot_recursos()
+        else:
+            self._load_recursos(model)
+
+        # Los fragmentos ("Contar caracteres") son transitorios y no viajan entre noticias.
+        self._frag_ranges = []
+        self._cuerpo_snapshot = panel.ed_cuerpo.toPlainText() if panel else None
+        self._refrescar_fragmentos_ui()
+        self._recalcular_deduccion()
+        self._on_textual_selection_changed()
+        self._aplicar_extra_selections()
 
     # ------------------------------------------------------------------
     # Ciclo de vida
@@ -1454,29 +1680,35 @@ class EditorNotaWindow(QMainWindow):
         self._fotos_browser.set_epigrafes(epigrafes)
 
     def _on_usar_epigrafe(self, texto: str) -> None:
-        if not self._stories:
+        panel = self._active_story()
+        if panel is None:
             return
-        panel = self._stories[0]
         panel.ed_epigrafe.setText(texto)
         panel.ed_epigrafe.setCursorPosition(0)   # leer el epígrafe desde el inicio
 
     # ------------------------------------------------------------------
-    # Slots de campos (principal story)
+    # Slots de campos — cuerpo/bajada de CUALQUIER noticia (cablea _add_story_panel);
+    # la corrección ortográfica queda acotada a la PRINCIPAL (índice 0).
     # ------------------------------------------------------------------
 
-    def _on_bajada_changed(self):
+    def _on_bajada_changed(self, panel: "StoryPanel" = None):
         if not self._stories:
             return
-        txt = self._stories[0].ed_bajada.toPlainText()
-        if self._hl_bajada is not None:
-            self._hl_bajada.schedule_check(txt)
+        panel = panel or self._active_story()
+        if panel is self._stories[0] and self._hl_bajada is not None:
+            self._hl_bajada.schedule_check(panel.ed_bajada.toPlainText())
 
-    def _on_cuerpo_changed(self):
+    def _on_cuerpo_changed(self, panel: "StoryPanel" = None):
         if not self._stories:
             return
-        txt = self._stories[0].ed_cuerpo.toPlainText()
-        if self._hl_cuerpo is not None:
+        panel = panel or self._active_story()
+        txt = panel.ed_cuerpo.toPlainText()
+        if panel is self._stories[0] and self._hl_cuerpo is not None:
             self._hl_cuerpo.schedule_check(txt)
+        if panel is not self._active_story():
+            # Cambios programáticos en una noticia no activa (p. ej. carga inicial) no
+            # deben mover el conteo de caracteres/pintado de la que se está mostrando.
+            return
         # Solo una edición REAL del texto reinicia los fragmentos. El interlineado
         # (apply_line_spacing → mergeBlockFormat) emite textChanged SIN cambiar el texto:
         # comparar el texto plano evita borrar los fragmentos por ese reformateo.
@@ -1558,19 +1790,23 @@ class EditorNotaWindow(QMainWindow):
             total -= self._mq.get("sin_foto_bonus", 945)
         self._aplicar_sin_foto_ui(foto_tipo == "Sin foto")
 
-        for panel in self._stories:
+        # La deducción es de la noticia ACTIVA (foto/textual/dato/número son por noticia):
+        # aplicarla a todos los paneles pisaría el límite de las otras con recursos ajenos.
+        panel = self._active_story()
+        if panel is not None:
             panel.set_external_deduction(total)
         # El límite efectivo cambió → refrescar el tinte "hasta el límite".
         self._aplicar_extra_selections()
 
     def _aplicar_sin_foto_ui(self, sin_foto: bool):
-        """'Sin foto' deshabilita el epígrafe de cada noticia y la carga de fotos de página."""
+        """'Sin foto' deshabilita el epígrafe de la noticia ACTIVA (la foto es por noticia)
+        y la carga de fotos de página."""
         self._btn_agregar_foto.setEnabled(not sin_foto)
-        for panel in self._stories:
-            ed = getattr(panel, "ed_epigrafe", None)
-            if ed is not None:
-                ed.setEnabled(not sin_foto)
-                ed.setToolTip("Sin foto: el epígrafe no aplica" if sin_foto else "")
+        panel = self._active_story()
+        ed = getattr(panel, "ed_epigrafe", None) if panel is not None else None
+        if ed is not None:
+            ed.setEnabled(not sin_foto)
+            ed.setToolTip("Sin foto: el epígrafe no aplica" if sin_foto else "")
 
     def _on_numero_edit(self):
         d = self._numero_card.get_data()
@@ -1655,13 +1891,30 @@ class EditorNotaWindow(QMainWindow):
         maqueta_sel = self._cb_maqueta.currentText()
         _log.info("Editor P%02d guardar: %s", self.numero,
                   [(_rol_de_indice(self._stories.index(p)), p._txt_path.name) for p in panels])
+
+        # Recursos independientes por noticia: guardar el estado de la pestaña activa antes
+        # de tocar los widgets compartidos, y recargar el de CADA panel antes de escribir su
+        # propio JSON (si no, todos los paneles se guardarían con los recursos de la activa).
+        activo_idx = self._active_res_idx
+        if self._stories:
+            self._res_cache[activo_idx] = self._snapshot_recursos()
+
         for panel in panels:
             try:
                 panel.save_to_path(panel._txt_path)
+                idx = self._stories.index(panel)
+                self._load_recursos(self._res_cache.get(idx) or {})
                 self._actualizar_nota_json(panel._txt_path, panel, maqueta_sel)
             except Exception as e:
                 QMessageBox.critical(self, "Error al guardar", str(e))
                 return False
+
+        # Dejar los widgets mostrando otra vez la pestaña que el usuario tenía abierta.
+        if self._stories:
+            self._load_recursos(self._res_cache.get(activo_idx) or {})
+            self._recalcular_deduccion()
+            self._on_textual_selection_changed()
+
         self.nota_guardada.emit(self.numero)
         return True
 
@@ -1836,19 +2089,26 @@ class EditorNotaWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _auto_detect(self):
+        """Carga inicial: detecta y restaura recursos para TODAS las noticias de la página
+        (cada una contra su propio JSON), cachea el resultado por índice y deja los widgets
+        mostrando la PRINCIPAL (índice 0) — recursos independientes por noticia."""
         if not self._stories:
             return
-        body = self._stories[0].ed_cuerpo.toPlainText()
-        if not body.strip():
-            return
-        cands = self._detector.detect(body)
-        self._textual_cards.set_candidates([c.text for c in cands])
-        textuales_auto = getattr(self, "_textuales_auto", [])
-        if textuales_auto:
-            self._textual_cards.add_preselected(textuales_auto)
-        datos = self._detect_datos(body)
-        self._populate_dato_cards(datos)
-        self._restore_saved_fields()
+        for idx, panel in enumerate(self._stories):
+            self._active_res_idx = idx
+            self._auto_detect_para(panel)
+            if idx == 0:
+                textuales_auto = getattr(self, "_textuales_auto", [])
+                if textuales_auto:
+                    self._textual_cards.add_preselected(textuales_auto)
+            self._restore_saved_fields_para(panel)
+            # Fijar la deducción de ESTE panel ahora (no solo cuando el usuario lo visite),
+            # así limite_efectivo_cuerpo() es correcto desde la carga para todas las noticias.
+            self._recalcular_deduccion()
+            self._res_cache[idx] = self._snapshot_recursos()
+        self._active_res_idx = 0
+        self._load_recursos(self._res_cache[0])
+        self._recalcular_deduccion()
 
     def _populate_dato_cards(self, datos: list[str]):
         while self._dato_lay_cards.count() > 1:
@@ -1864,95 +2124,6 @@ class EditorNotaWindow(QMainWindow):
             card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
             self._dato_lay_cards.insertWidget(self._dato_lay_cards.count() - 1, card)
             self._dato_cards.append(card)
-
-    def _restore_saved_fields(self):
-        if not self._stories or not self._stories[0]._txt_path:
-            return
-        json_path = self._stories[0]._txt_path.with_suffix(".json")
-        if not json_path.exists():
-            return
-        try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
-        # Textual tipo y selecciones
-        textual = data.get("textual")
-        if textual and textual.get("tipo"):
-            tipo = textual["tipo"]
-            label_map = {
-                "simple": "simple", "x2": "x2", "x3": "x3",
-                "con_foto": "con foto", "con_foto_xl": "con foto XL",
-            }
-            label = label_map.get(tipo, "—")
-            idx = self._cb_textual_tipo.findText(label)
-            if idx >= 0:
-                self._cb_textual_tipo.blockSignals(True)
-                self._cb_textual_tipo.setCurrentIndex(idx)
-                self._cb_textual_tipo.blockSignals(False)
-                self._textual_cards.set_tipo(tipo)
-            self._textual_cards.restore_saved(textual)
-
-        # Dato: dict {titulo, texto} (nuevo) o string plano (legacy → sin título).
-        dato_raw = data.get("dato")
-        if isinstance(dato_raw, dict):
-            dato_titulo = (dato_raw.get("titulo") or "").strip()
-            dato_texto = (dato_raw.get("texto") or "").strip()
-        elif isinstance(dato_raw, str):
-            dato_titulo, dato_texto = "", dato_raw.strip()
-        else:
-            dato_titulo, dato_texto = "", ""
-        if dato_texto:
-            limit = self._mq.get("dato_limit", 120)
-            matched = False
-            for card in self._dato_cards:
-                if card._text == dato_texto or card._edited_text == dato_texto:
-                    card.set_edited_text(dato_texto)
-                    card.set_titulo(dato_titulo)
-                    card.set_selected(True)
-                    for c in self._dato_cards:
-                        if c is not card:
-                            c.set_selected(False)
-                    matched = True
-                    break
-            if not matched:
-                card = _DatoCard(dato_texto, limit)
-                card.set_edited_text(dato_texto)
-                card.set_titulo(dato_titulo)
-                card.selected.connect(lambda t, c=card: self._on_dato_card_selected(t, c))
-                card.edit_requested.connect(lambda c=card: self._on_dato_card_dbl_clicked(c))
-                self._dato_lay_cards.insertWidget(0, card)
-                self._dato_cards.insert(0, card)
-                card.set_selected(True)
-
-        # Número
-        numero = data.get("numero")
-        if isinstance(numero, dict):
-            cab = numero.get("cabecera", "") or ""
-            num_txt = numero.get("texto", "") or ""
-            self._numero_card.set_data(cab, num_txt)
-            if cab or num_txt:
-                self._numero_card.set_selected(True)
-
-        # QR
-        qr_path_str = data.get("qr_path")
-        if qr_path_str:
-            qr = Path(qr_path_str)
-            if qr.exists():
-                self._qr_path = qr
-                self._fotos_browser.set_qr_path(qr)
-
-        # Tipo de foto
-        foto_tipo = (data.get("foto_tipo") or "2 columnas").strip()
-        if foto_tipo == "3 columnas wide":   # legacy: renombrado a "3 columnas"
-            foto_tipo = "3 columnas"
-        idx = self._cb_foto_tipo.findText(foto_tipo)
-        if idx >= 0:
-            self._cb_foto_tipo.blockSignals(True)
-            self._cb_foto_tipo.setCurrentIndex(idx)
-            self._cb_foto_tipo.blockSignals(False)
-
-        self._recalcular_deduccion()
 
     def _on_dato_card_selected(self, text: str, card: _DatoCard):
         for c in self._dato_cards:
@@ -1991,7 +2162,7 @@ class EditorNotaWindow(QMainWindow):
         self._highlight_source = source
         if not self._stories:
             return
-        editor = self._stories[0].ed_cuerpo
+        editor = self._active_story().ed_cuerpo
         body = editor.toPlainText()
         fmt = QTextCharFormat()
         fmt.setBackground(QColor(100, 180, 255, 55))
@@ -2020,7 +2191,7 @@ class EditorNotaWindow(QMainWindow):
     def _update_arrow_overlay(self):
         if not self._arrow_overlay or not self._stories:
             return
-        editor = self._stories[0].ed_cuerpo
+        editor = self._active_story().ed_cuerpo
         if not self._body_highlight_range:
             self._arrow_overlay.hide()
             return
@@ -2069,7 +2240,7 @@ class EditorNotaWindow(QMainWindow):
     def _scroll_body_to_highlight(self):
         if not self._body_highlight_range or not self._stories:
             return
-        editor = self._stories[0].ed_cuerpo
+        editor = self._active_story().ed_cuerpo
         c = QTextCursor(editor.document())
         c.setPosition(self._body_highlight_range[0])
         editor.setTextCursor(c)
@@ -2242,7 +2413,7 @@ class EditorNotaWindow(QMainWindow):
     def _aplicar_borde_seleccion(self, on: bool):
         if not self._stories:
             return
-        panel = self._stories[0]
+        panel = self._active_story()
         if on:
             # Mantener el tema de lectura y solo cambiar el borde a azul de selección.
             import re as _re
@@ -2260,7 +2431,8 @@ class EditorNotaWindow(QMainWindow):
     def _on_sel_mode_accept(self, mode: str):
         if not self._stories:
             return
-        cursor = self._stories[0].ed_cuerpo.textCursor()
+        _editor_sel = self._active_story().ed_cuerpo
+        cursor = _editor_sel.textCursor()
         text = cursor.selectedText().strip()
         text = text.replace("\u2029", "\n")   # separador de párrafo de QTextEdit
         btn, _row = self._sel_manual_ctrl()[mode]
@@ -2269,7 +2441,7 @@ class EditorNotaWindow(QMainWindow):
             if cursor.hasSelection():
                 self._agregar_fragmento(cursor.selectionStart(), cursor.selectionEnd())
                 cursor.clearSelection()
-                self._stories[0].ed_cuerpo.setTextCursor(cursor)
+                _editor_sel.setTextCursor(cursor)
             return
         if text:
             if mode == "textual":
@@ -2282,9 +2454,10 @@ class EditorNotaWindow(QMainWindow):
 
     def _on_sel_mode_cancel(self, mode: str):
         if self._stories:
-            c = self._stories[0].ed_cuerpo.textCursor()
+            editor = self._active_story().ed_cuerpo
+            c = editor.textCursor()
             c.clearSelection()
-            self._stories[0].ed_cuerpo.setTextCursor(c)
+            editor.setTextCursor(c)
         btn, _row = self._sel_manual_ctrl()[mode]
         btn.setChecked(False)
 
@@ -2336,15 +2509,18 @@ class EditorNotaWindow(QMainWindow):
         """Fragmentos acumulados + la selección viva actual del cuerpo (para el conteo en vivo)."""
         rangos = list(self._frag_ranges)
         if self._stories:
-            cur = self._stories[0].ed_cuerpo.textCursor()
+            cur = self._active_story().ed_cuerpo.textCursor()
             if cur.hasSelection():
                 rangos = rangos + [(cur.selectionStart(), cur.selectionEnd())]
         return self._fusionar_rangos(rangos)
 
-    def _on_frag_live_changed(self):
+    def _on_frag_live_changed(self, panel: "StoryPanel" = None):
         """Conteo en vivo mientras se arrastra la selección: solo activo en la pestaña
-        'Contar caracteres' (los fragmentos acumulados + la selección actual se cuentan juntos)."""
+        'Contar caracteres' Y en el cuerpo de la noticia ACTIVA (los fragmentos acumulados +
+        la selección actual se cuentan juntos)."""
         if not self._stories:
+            return
+        if panel is not None and panel is not self._active_story():
             return
         if self._right_tabs.widget(self._right_tabs.currentIndex()) is not getattr(
                 self, "_tab_fragmentos", None):
@@ -2375,7 +2551,7 @@ class EditorNotaWindow(QMainWindow):
             w = item.widget()
             if w:
                 w.deleteLater()
-        body = self._stories[0].ed_cuerpo.toPlainText() if self._stories else ""
+        body = self._active_story().ed_cuerpo.toPlainText() if self._stories else ""
         for i, (s, e) in enumerate(self._frag_ranges):
             frag = body[s:e]
             preview = frag.strip().replace("\u2029", " ").replace("\n", " ")
@@ -2406,7 +2582,7 @@ class EditorNotaWindow(QMainWindow):
         """(a) chars de la selección, (b) chars de lo no seleccionado, (c) vs límite maqueta."""
         if not self._stories:
             return
-        panel = self._stories[0]
+        panel = self._active_story()
         body = panel.ed_cuerpo.toPlainText()
         total = self._contar_chars(body)
         seleccionado = sum(self._contar_chars(body[s:e]) for s, e in self._frag_rangos_efectivos())
@@ -2500,7 +2676,7 @@ class EditorNotaWindow(QMainWindow):
         """Compone: tinte de límite (fondo) + highlight celeste de recursos + naranja de fragmentos."""
         if not self._stories:
             return
-        panel = self._stories[0]
+        panel = self._active_story()
         editor = panel.ed_cuerpo
         recursos = list(getattr(self, "_resource_extra_sels", []) or [])
         editor.setExtraSelections(
@@ -2645,7 +2821,7 @@ class EditorNotaWindow(QMainWindow):
         se editaban con texto vacío (bug 'textual en blanco')."""
         if not self._stories:
             return
-        body = self._stories[0].ed_cuerpo.toPlainText()
+        body = self._active_story().ed_cuerpo.toPlainText()
         cands = self._detector.detect(body)
         self._textual_cards.reanalizar_preservando([c.text for c in cands])
         self._right_tabs.setCurrentWidget(self._tab_textuales)
