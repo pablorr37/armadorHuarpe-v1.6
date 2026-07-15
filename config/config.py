@@ -245,6 +245,23 @@ class Config:
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 
+    @property
+    def pdf_export_modo(self) -> str:
+        """'bot' (pyautogui, default) o 'script' (ExportarPDF.js) — modo del bot de export a PDF."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        valor = cfg.get("AUTO", "pdf_export_modo", fallback="bot").strip().lower()
+        return valor if valor in ("bot", "script") else "bot"
+
+    def save_pdf_export_modo(self, valor: str) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "AUTO" not in cfg:
+            cfg["AUTO"] = {}
+        cfg["AUTO"]["pdf_export_modo"] = valor if valor in ("bot", "script") else "bot"
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
     # Opciones válidas de espera (segundos) antes de lanzar el armado automático.
     AUTO_DELAY_OPCIONES = (5, 10, 15, 20)
 

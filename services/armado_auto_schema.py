@@ -42,6 +42,11 @@ PASOS_CALIBRACION = [
     {"clave": "script", "tipo": "punto", "desc": "el ítem 'Pegar Auto.js' del palette JavaScript"},
     {"clave": "play",   "tipo": "punto", "desc": "el botón Play ▶ del palette JavaScript"},
 
+    # Bot de export a PDF — modo Script (alternativa al modo Bot/pyautogui). Reusa el mismo
+    # botón Play; solo cambia qué ítem del palette está seleccionado antes de tocarlo.
+    {"clave": "export_script", "tipo": "punto",
+     "desc": "el ítem 'ExportarPDF.js' del palette JavaScript (bot de export a PDF, modo Script)"},
+
     # Panel de medidas y selector de plantilla (campos donde el bot escribe valores). Globales.
     {"clave": "plantilla_sel", "tipo": "punto",
      "desc": "el SELECTOR DE PLANTILLA (campo donde se escribe 1/2/3 para cambiar de plantilla)"},

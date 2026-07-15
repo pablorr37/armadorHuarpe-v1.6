@@ -779,18 +779,58 @@ class QuarkAutomator:
         self._pyautogui.press("enter")
         self.esperar(0.6)
 
-    def cerrar(self):
-        """Cierra el documento (Ctrl+F4) + Enter (si pregunta por cambios)."""
+    def titulo_quark(self) -> str:
+        """Título de la ventana PRINCIPAL de Quark (para verificar si hay un doc abierto)."""
+        if self.simular:
+            return ""
+        try:
+            import ctypes
+            hwnd = encontrar_hwnd_quark_principal() or encontrar_hwnd_quark()
+            if not hwnd:
+                return ""
+            user32 = ctypes.windll.user32
+            length = user32.GetWindowTextLengthW(hwnd)
+            buff = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buff, length + 1)
+            return buff.value or ""
+        except Exception:
+            return ""
+
+    def cerrar(self, nombre_qxp=None, reintentos: int = 3) -> bool:
+        """Cierra el documento (Ctrl+F4 + Enter), re-enfocando y REINTENTANDO si no cerró.
+        Verifica por el título de la ventana de Quark (que ya no contenga el qxp / '.qxp').
+        Devuelve True si quedó cerrado. `nombre_qxp` opcional mejora la verificación."""
         if self.simular:
             _log.info("[SIM] cerrar (Ctrl+F4 + Enter)")
-            return
-        if not self.asegurar_foco():
-            _log.warning("cerrar abortado: Quark no está en primer plano.")
-            return
-        self._pyautogui.hotkey("ctrl", "f4", interval=HOTKEY_INTERVAL)
-        self.esperar(0.8)
-        self._pyautogui.press("enter")
-        self.esperar(0.6)
+            return True
+        stem = None
+        if nombre_qxp:
+            base = str(nombre_qxp).replace("\\", "/").rsplit("/", 1)[-1].lower()
+            stem = base[:-4] if base.endswith(".qxp") else base
+        for intento in range(1, int(reintentos) + 1):
+            # Foco COMPLETO (no el chequeo rápido): al abrir el 2º qxp en un Quark ya corriendo
+            # el foreground es frágil y cerrar() abortaba sin cerrar.
+            if not self.focus_quark(timeout=8.0):
+                _log.warning("cerrar: Quark no quedó al frente (intento %d/%d).", intento, reintentos)
+                self.esperar(0.5)
+                continue
+            self.esperar_y_cerrar_dialogo_fuentes(timeout=1.0)
+            self._pyautogui.hotkey("ctrl", "f4", interval=HOTKEY_INTERVAL)
+            self.esperar(0.8)
+            self._pyautogui.press("enter")   # confirmar 'guardar cambios' si preguntara
+            self.esperar(0.8)
+            titulo = self.titulo_quark().lower()
+            if not titulo:
+                _log.info("cerrar: sin título legible; se asume cerrado (intento %d).", intento)
+                return True
+            cerrado = (stem not in titulo) if stem else (".qxp" not in titulo)
+            if cerrado:
+                _log.info("cerrar: documento cerrado (intento %d).", intento)
+                return True
+            _log.warning("cerrar: sigue abierto (título=%r, intento %d/%d).",
+                         titulo, intento, reintentos)
+        _log.warning("cerrar: no se pudo cerrar el documento tras %d intentos.", reintentos)
+        return False
 
     def exportar_pdf(self, nombre: str, espera_dialogo: float = 1.0,
                      espera_export: float = 2.0) -> bool:

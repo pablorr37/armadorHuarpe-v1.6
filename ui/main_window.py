@@ -1230,6 +1230,30 @@ class MainWindow(QMainWindow):
         self.act_pdf_off.triggered.connect(lambda: self._set_modo_pdf(False))
         menu_pdf.addAction(self.act_pdf_on)
         menu_pdf.addAction(self.act_pdf_off)
+        menu_pdf.addSeparator()
+
+        # Submenú "Modo": Bot (pyautogui, probado) vs Script (ExportarPDF.js, headless vía
+        # kOutputUI_SuppressAll) — permite testear y elegir cuál usar en producción.
+        menu_pdf_modo = QMenu("Modo", self)
+        self.act_pdf_modo_bot = QAction("Bot (pyautogui)", self, checkable=True)
+        self.act_pdf_modo_script = QAction("Script (JS)", self, checkable=True)
+        _pdf_modo_actual = config_global.pdf_export_modo
+        self.act_pdf_modo_bot.setChecked(_pdf_modo_actual == "bot")
+        self.act_pdf_modo_script.setChecked(_pdf_modo_actual == "script")
+        grupo_pdf_modo = QActionGroup(self)
+        grupo_pdf_modo.addAction(self.act_pdf_modo_bot)
+        grupo_pdf_modo.addAction(self.act_pdf_modo_script)
+        grupo_pdf_modo.setExclusive(True)
+        self.act_pdf_modo_bot.triggered.connect(lambda: self._set_pdf_export_modo("bot"))
+        self.act_pdf_modo_script.triggered.connect(lambda: self._set_pdf_export_modo("script"))
+        menu_pdf_modo.addAction(self.act_pdf_modo_bot)
+        menu_pdf_modo.addAction(self.act_pdf_modo_script)
+        menu_pdf.addMenu(menu_pdf_modo)
+
+        act_calibrar_export_script = QAction("Calibrar 'ExportarPDF.js' en el palette…", self)
+        act_calibrar_export_script.triggered.connect(self._on_calibrar_auto)
+        menu_pdf.addAction(act_calibrar_export_script)
+
         menu_config.addMenu(menu_pdf)
 
         # === Perfil (colores de estado de la grilla) ===
@@ -1745,6 +1769,9 @@ class MainWindow(QMainWindow):
             from controller.pdf_export_mode import PdfExportOrchestrator
             self.pdf_orq = PdfExportOrchestrator(
                 self._pdf_listar_mandar, self._pdf_quark_exe, self._pdf_root,
+                fn_confirmar_inicio=self._pdf_confirmar_inicio,
+                fn_coords_export=self._pdf_coords_export,
+                modo=config_global.pdf_export_modo,
                 simular=config_global.auto_mode_simular, parent=self)
             self.pdf_orq.log.connect(lambda m: self.statusBar().showMessage(m, 4000))
             self.pdf_orq.estado.connect(lambda m: self.statusBar().showMessage(m, 4000))
@@ -5686,6 +5713,20 @@ class MainWindow(QMainWindow):
         """Raíz de Imprenta temporal (donde Quark deja el PDF recién exportado)."""
         return getattr(self.controller.rutas, "pdf_root", None)
 
+    def _pdf_coords_export(self):
+        """Coords calibradas del ítem 'ExportarPDF.js' en el palette JS (modo Script)."""
+        return (config_global.auto_coord("export_script"), config_global.auto_coord("play"))
+
+    def _set_pdf_export_modo(self, valor: str):
+        """Bot (pyautogui) vs Script (ExportarPDF.js) — persiste y aplica al orquestador."""
+        valor = valor if valor in ("bot", "script") else "bot"
+        config_global.save_pdf_export_modo(valor)
+        if getattr(self, "act_pdf_modo_bot", None) is not None:
+            self.act_pdf_modo_bot.setChecked(valor == "bot")
+            self.act_pdf_modo_script.setChecked(valor == "script")
+        if getattr(self, "pdf_orq", None) is not None:
+            self.pdf_orq.set_modo(valor)
+
     def _on_pegado_fallido(self, numero: int, es_final: bool):
         """El bot no detectó el cartel 'Pegado finalizado'. Siempre avisa con cuenta regresiva
         (mismo tiempo que el aviso de inicio). Si es el fallo definitivo (3er intento), marca la
@@ -5745,6 +5786,23 @@ class MainWindow(QMainWindow):
             return dlg.exec_() == QDialog.Accepted
         except Exception as e:
             _log.warning("Cuenta regresiva P%s falló: %s", numero, e)
+            return True
+
+    def _pdf_confirmar_inicio(self, folio) -> bool:
+        """Gate previo al export PDF (hilo GUI): misma cuenta regresiva cancelable que el
+        armador (usa el mismo `auto_delay_segundos`). True si continúa/expira, False si cancela."""
+        try:
+            if self.pdf_orq is not None and self.pdf_orq.simular:
+                return True
+            seg = config_global.auto_delay_segundos
+            if seg <= 0:
+                return True
+            from ui.countdown_dialog import CountdownDialog
+            dlg = CountdownDialog(seg, parent=self,
+                                  titulo=f"Exportar PDF — página {int(folio):02d}")
+            return dlg.exec_() == QDialog.Accepted
+        except Exception as e:
+            _log.warning("Cuenta regresiva PDF P%s falló: %s", folio, e)
             return True
 
     def _on_calibrar_auto(self):
