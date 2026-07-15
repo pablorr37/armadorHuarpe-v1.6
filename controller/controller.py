@@ -942,6 +942,7 @@ class ArmadorController:
         self.file_service.set_rutas({
             "personal_folder": self.rutas.personal_folder,
             "quark_output_dir": self.rutas.quark_output_dir,
+            "pdf_root": self.rutas.pdf_root,
             "pdf_output_dir": self.rutas.pdf_output_dir,
             "pdf_ok_dir": self.rutas.pdf_ok_dir,
             #"shared_ini_path": self.rutas.shared_ini_path, DEPRECADO PORQUE YA NO SE USA INI CENTRAL

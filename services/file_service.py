@@ -2140,6 +2140,39 @@ class FileService:
         return self.buscar_qxp_por_numero(mandar, numero)
 
 
+    def listar_qxp_en_mandar(self) -> list[tuple[int, Path]]:
+        """Lista (folio, path) de los qxp en 'mandar' — candidatos del bot de export a PDF.
+        `folio` es el/los número(s) de página detectados en el nombre, unidos con '-' si es
+        un pliego (p. ej. '07-08' para 'Pag 07 y 08.qxp')."""
+        base = Path(self.rutas.get("quark_output_dir") or "")
+        mandar = base / "final" / "mandar"
+        out: list[tuple[int, Path]] = []
+        if not mandar.exists():
+            return out
+        for f in sorted(mandar.iterdir()):
+            if not f.is_file() or f.suffix.lower() != ".qxp":
+                continue
+            paginas = sorted(self._extract_qxp_pages(f.stem))
+            if paginas:
+                out.append((paginas[0], f))
+        return out
+
+
+    def mover_pdf_a_carpeta_dia(self, pdf_path: Path) -> bool:
+        """Mueve un PDF recién exportado (en la raíz de Imprenta temporal) a la carpeta del
+        día (`pdf_output_dir`). Usado por el poll del bot de export (services/pdf_mover_watcher.py)."""
+        dest_dir = Path(self.rutas.get("pdf_output_dir") or "")
+        if not dest_dir or str(dest_dir) == ".":
+            _log.warning("mover_pdf_a_carpeta_dia: sin 'pdf_output_dir' configurado.")
+            return False
+        try:
+            _move_file(Path(pdf_path), dest_dir / Path(pdf_path).name, overwrite=True)
+            return True
+        except Exception as e:
+            _log.warning("mover_pdf_a_carpeta_dia(%s) falló: %s", pdf_path, e)
+            return False
+
+
     def find_qxp_final(self, numero: int) -> Optional[Path]:
         base = Path(self.rutas.get("quark_output_dir") or "")
         final = base / "final"

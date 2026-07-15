@@ -1217,6 +1217,21 @@ class MainWindow(QMainWindow):
 
         menu_config.addMenu(menu_auto)
 
+        # === Exportar PDF (bot independiente, sobre 'mandar') ===
+        menu_pdf = QMenu("Exportar PDF (bot)", self)
+        self.act_pdf_on = QAction("Activo", self, checkable=True)
+        self.act_pdf_off = QAction("Inactivo", self, checkable=True)
+        self.act_pdf_off.setChecked(True)
+        grupo_pdf = QActionGroup(self)
+        grupo_pdf.addAction(self.act_pdf_on)
+        grupo_pdf.addAction(self.act_pdf_off)
+        grupo_pdf.setExclusive(True)
+        self.act_pdf_on.triggered.connect(lambda: self._set_modo_pdf(True))
+        self.act_pdf_off.triggered.connect(lambda: self._set_modo_pdf(False))
+        menu_pdf.addAction(self.act_pdf_on)
+        menu_pdf.addAction(self.act_pdf_off)
+        menu_config.addMenu(menu_pdf)
+
         # === Perfil (colores de estado de la grilla) ===
         self._perfil_colores = config_global.perfil_colores
         menu_perfil = QMenu("Perfil", self)
@@ -1724,6 +1739,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             _log.warning("No se pudo iniciar el Modo automático: %s", e)
             self.auto_orq = None
+
+        # --- Bot de exportación qxp→PDF (independiente del Armado automático) ---
+        try:
+            from controller.pdf_export_mode import PdfExportOrchestrator
+            self.pdf_orq = PdfExportOrchestrator(
+                self._pdf_listar_mandar, self._pdf_quark_exe, self._pdf_root,
+                simular=config_global.auto_mode_simular, parent=self)
+            self.pdf_orq.log.connect(lambda m: self.statusBar().showMessage(m, 4000))
+            self.pdf_orq.estado.connect(lambda m: self.statusBar().showMessage(m, 4000))
+            self.pdf_orq.apagado_auto.connect(self._on_pdf_apagado)
+            self.pdf_orq.set_enabled(False)   # SIEMPRE arranca inactivo (se activa a mano)
+        except Exception as e:
+            _log.warning("No se pudo iniciar el bot de exportación a PDF: %s", e)
+            self.pdf_orq = None
 
         # --- Conexión automática a la base 1.5s después de iniciar ---
         QTimer.singleShot(1500, self._conectar_base_auto)
@@ -5439,6 +5468,25 @@ class MainWindow(QMainWindow):
         )
         self._chrome_watcher.start(5000)
 
+        # Poll del bot de export a PDF — arranca junto con la base (independiente de si el
+        # bot está activo: solo mueve archivos cuando encuentra un PDF exportado).
+        prev_pdf = getattr(self, "_pdf_mover_watcher", None)
+        if prev_pdf is not None:
+            try:
+                prev_pdf.stop()
+            except Exception:
+                pass
+        from services.pdf_mover_watcher import PdfMoverWatcher
+        self._pdf_mover_watcher = PdfMoverWatcher(
+            self.controller.file_service, fn_comp=self.controller.composicion_pagina)
+        self._pdf_mover_watcher.pdf_movido.connect(
+            lambda n: self.statusBar().showMessage(f"P{n:02d}: PDF movido a su carpeta.", 4000)
+        )
+        self._pdf_mover_watcher.error_proceso.connect(
+            lambda msg: self.statusBar().showMessage(f"[Exportar PDF] {msg}", 5000)
+        )
+        self._pdf_mover_watcher.start(5000)
+
         self.colorear_paginas()
         self.on_poll()
 
@@ -5550,6 +5598,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             _log.warning("[WARN] Modo automático notificar_listas: %s", e)
 
+        # --- Bot de exportación PDF: reintenta la cola desde 'mandar' en cada poll ---
+        try:
+            if getattr(self, "pdf_orq", None) is not None and self.pdf_orq.enabled:
+                self.pdf_orq.poll()
+        except Exception as e:
+            _log.warning("[WARN] Exportar PDF poll: %s", e)
+
     def _on_poll_error(self, msg: str):
         self._poll_running = False
         # No frenes la app por errores de red: mostrás un aviso suave
@@ -5591,6 +5646,45 @@ class MainWindow(QMainWindow):
             self.act_auto_on.setChecked(False)
             self.act_auto_off.setChecked(True)
         self.statusBar().showMessage(motivo or "Armado automático apagado.", 8000)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Bot de exportación PDF (independiente del Armado automático)
+    # ══════════════════════════════════════════════════════════════════
+    def _set_modo_pdf(self, activo: bool):
+        if getattr(self, "act_pdf_on", None) is not None:
+            self.act_pdf_on.setChecked(activo)
+            self.act_pdf_off.setChecked(not activo)
+        if getattr(self, "pdf_orq", None) is None:
+            return
+        self.pdf_orq.set_enabled(activo)
+
+    def _on_pdf_apagado(self, motivo: str):
+        """El bot de export a PDF se apagó solo (Esc×5 / fallo de foco): reflejar en el menú."""
+        if getattr(self, "act_pdf_on", None) is not None:
+            self.act_pdf_on.setChecked(False)
+            self.act_pdf_off.setChecked(True)
+        self.statusBar().showMessage(motivo or "Exportar PDF apagado.", 8000)
+
+    def _pdf_listar_mandar(self):
+        """Candidatos (folio, path) del bot de export a PDF: los qxp en 'mandar'."""
+        try:
+            return self.controller.file_service.listar_qxp_en_mandar()
+        except Exception as e:
+            _log.warning("listar_qxp_en_mandar falló: %s", e)
+            return []
+
+    def _pdf_quark_exe(self) -> str:
+        """Ejecutable de Quark configurado (mismo criterio que abrir/armar una página)."""
+        cfg = configparser.ConfigParser()
+        cfg.read(str(Config.CONFIG_FILE), encoding="utf-8")
+        quark_sel = cfg.get("quark", "quark_seleccionado", fallback="Quark 2018").strip().lower()
+        key = "quark8" if "quark 8" in quark_sel else "quark2018"
+        exe = cfg.get("apps", key, fallback="").strip()
+        return exe if (exe and Path(exe).exists()) else ""
+
+    def _pdf_root(self):
+        """Raíz de Imprenta temporal (donde Quark deja el PDF recién exportado)."""
+        return getattr(self.controller.rutas, "pdf_root", None)
 
     def _on_pegado_fallido(self, numero: int, es_final: bool):
         """El bot no detectó el cartel 'Pegado finalizado'. Siempre avisa con cuenta regresiva

@@ -792,6 +792,28 @@ class QuarkAutomator:
         self._pyautogui.press("enter")
         self.esperar(0.6)
 
+    def exportar_pdf(self, nombre: str, espera_dialogo: float = 1.0,
+                     espera_export: float = 2.0) -> bool:
+        """Exporta el layout activo a PDF: Ctrl+Alt+P abre el diálogo de exportación con el
+        campo de nombre ya seleccionado (comportamiento por defecto de Quark); escribe
+        `nombre` (sin extensión) y confirma con Enter. No espera a que el PDF aparezca en
+        disco — eso lo hace el poll del orquestador de export (services/pdf_mover_watcher.py)."""
+        if self.simular:
+            _log.info("[SIM] exportar_pdf(%r) (Ctrl+Alt+P + nombre + Enter)", nombre)
+            return True
+        if not self.asegurar_foco():
+            _log.warning("exportar_pdf abortado: Quark no está en primer plano.")
+            return False
+        self._pyautogui.hotkey("ctrl", "alt", "p", interval=HOTKEY_INTERVAL)
+        self.esperar(espera_dialogo)
+        # Si un cartel de fuentes se coló justo antes del diálogo de export, limpiarlo.
+        self.esperar_y_cerrar_dialogo_fuentes(timeout=1.0)
+        self._pyautogui.typewrite(str(nombre), interval=0.03)
+        self.esperar(0.2)
+        self._pyautogui.press("enter")
+        self.esperar(espera_export)
+        return True
+
     def posicion_mouse(self):
         """(x, y) actual del mouse (para calibrar). None en simulación."""
         if self.simular or self._pyautogui is None:
