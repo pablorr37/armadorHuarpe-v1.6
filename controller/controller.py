@@ -1899,6 +1899,26 @@ class ArmadorController:
             if epi:
                 geo["epigrafe"] = epi
 
+        # --- 2ª foto (secundaria): el JS clona la foto+epígrafe principal a estas coords y la
+        #     rellena con la imagen/caption de la foto rol 'secundaria'. Sólo si hay 2ª foto. ---
+        if (comp.get("foto_cant") or 0) >= 2:
+            foto2 = {}
+            for k, clave in (("x_mm", "foto2_x"), ("y_mm", "foto2_y"),
+                             ("ancho_mm", "foto2_a"), ("alto_mm", "foto2_al")):
+                v = self._valor_mm(clave, seccion, aviso)
+                if v is not None:
+                    foto2[k] = v
+            if foto2:
+                geo["foto2"] = foto2
+            epi2 = {}
+            for k, clave in (("x_mm", "epi2_x"), ("y_mm", "epi2_y"),
+                             ("ancho_mm", "epi2_a"), ("alto_mm", "epi2_al")):
+                v = self._valor_mm(clave, seccion, aviso)
+                if v is not None:
+                    epi2[k] = v
+            if epi2:
+                geo["epi2"] = epi2
+
         # --- Recursos movibles activos con X/Y calibrados (posición absoluta en mm de página). ---
         recursos: dict = {}
         for rec in RECURSOS_MOVIBLES:

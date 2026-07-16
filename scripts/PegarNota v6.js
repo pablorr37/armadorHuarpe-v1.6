@@ -20,6 +20,26 @@
     // =========================================================
     var ESTILO_BAJADA = "pr-C-%20BAJADA";
     var ESTILO_TEXTO  = "pr-C-%20TEXTO";
+    // Hoja de estilo de CARÁCTER del intertítulo (se aplica al class del qx-span). La clase
+    // lleva el prefijo "ch-" y SÓLO el espacio percent-encoded (%20); los acentos van
+    // LITERALES (comprobado en Quark: "ch-E-%20INTERTÍTULO" aplica el estilo; el "%C3%8D"
+    // que produce encodeURIComponent NO matchea).
+    var ESTILO_INTERTITULO = "ch-E-%20INTERTÍTULO";
+    // Reset de un run de cuerpo tras un intertítulo. En Quark el estilo de carácter del
+    // intertítulo se propaga a los spans siguientes; para cortarlo hay que replicar la
+    // representación nativa de Quark: class="ch-" (No Style, corta la herencia) + estilo
+    // inline con los atributos de carácter de C- TEXTO (sin el inline, "No Style" deja el
+    // texto sin formato). Los valores por defecto salen del span materializado por Quark
+    // (dump real: Merriweather Light / 7). En runtime se capturan del template si es posible.
+    var ESTILO_CUERPO_FALLBACK =
+      "--qx-font-family:Merriweather Light;--qx-language:es;--qx-font-size:7;" +
+      "--qx-stroke-color:Negro;--qx-stroke-miterlimit:4pt;--qx-stroke-shade:1;";
+
+    // Formateo especial del cuerpo (intertítulos "##" → E- INTERTÍTULO + reset del cuerpo).
+    // DESCONECTADO momentáneamente: el código se conserva íntegro en _construirParrafo; con
+    // el flag en false se pega el cuerpo PLANO (sin intertítulo ni reset). Poner en true para
+    // reconectarlo.
+    var FORMATO_ESPECIAL_CUERPO = false;
 
     var AVISO_TARGETS = {
       "default": {
@@ -238,6 +258,60 @@
       span.textContent = texto;
     }
 
+    // Construye UN párrafo del cuerpo (qx-p + qx-span):
+    //  · Intertítulo: si el texto empieza con "##" → se quita y el span lleva la hoja de
+    //    carácter E- INTERTÍTULO (viene siempre como su propia línea; el salto de párrafo
+    //    resetea la línea siguiente a C- TEXTO).
+    //  · Resto: un span SIN class → hereda el estilo del cuerpo (C- TEXTO).
+    // Nota: el resaltado de "Diario Huarpe" quedó deprecado — en Quark el estilo de carácter
+    // se propaga a los spans siguientes y no hay reset no-destructivo a C- TEXTO mid-párrafo.
+    // Captura el estilo inline de carácter del cuerpo desde un span ya materializado por
+    // Quark (class="ch-" con --qx-font-family/--qx-font-size en un párrafo bodyStyle). Sirve
+    // para resetear los runs de cuerpo tras un intertítulo sin heredar su estilo de carácter.
+    // Se llama ANTES de limpiar el story (mientras el span materializado sigue presente).
+    function _capturarResetCuerpo(story, bodyStyle) {
+      var spans = story.getElementsByTagName("qx-span");
+      var anyStyled = null;
+      for (var i = 0; i < spans.length; i++) {
+        var st = spans[i].getAttribute("style");
+        if (!st || st.indexOf("--qx-font-family") < 0) continue;
+        if (!anyStyled) anyStyled = st;
+        var pp = spans[i].parentNode;
+        var cls = (pp && pp.getAttribute) ? (pp.getAttribute("class") || "") : "";
+        if (bodyStyle && cls === bodyStyle) return st;   // preferir el del estilo del cuerpo
+      }
+      return anyStyled || ESTILO_CUERPO_FALLBACK;
+    }
+
+    function _construirParrafo(story, texto, bodyStyle, resetCuerpo) {
+      var p = document.createElement("qx-p");
+      p.setAttribute("class", bodyStyle);
+      var span = document.createElement("qx-span");
+
+      // DESCONECTADO: pegado plano (un span sin clase → hereda el estilo del cuerpo). El
+      // formateo especial queda debajo, intacto, para reconectarlo con FORMATO_ESPECIAL_CUERPO.
+      if (!FORMATO_ESPECIAL_CUERPO) {
+        span.textContent = texto;
+        p.appendChild(span);
+        story.appendChild(p);
+        return;
+      }
+
+      if (/^#{2,}/.test(texto)) {
+        span.setAttribute("class", ESTILO_INTERTITULO);
+        span.textContent = texto.replace(/^#{2,}\s*/, "");
+      } else {
+        // Run de cuerpo: replicar el reset nativo de Quark → class="ch-" (corta la herencia
+        // del estilo de carácter del intertítulo) + estilo inline con los atributos de C- TEXTO.
+        span.setAttribute("class", "ch-");
+        if (resetCuerpo) span.setAttribute("style", resetCuerpo);
+        span.textContent = texto;
+      }
+
+      p.appendChild(span);
+      story.appendChild(p);
+    }
+
     // Cuerpo con bajada integrada:
     // · p[0] → bajada con clase BAJADA
     // · detecta marcador "prensa@diariohuarpe.com"
@@ -280,18 +354,17 @@
         if (cls && cls.trim()) bodyStyle = cls;
       }
 
+      // Capturar el estilo de carácter del cuerpo ANTES de limpiar (el span materializado
+      // por Quark queda en los párrafos estructurales que se conservan).
+      var resetCuerpo = _capturarResetCuerpo(story, bodyStyle);
+
       while (story.childNodes.length > startBodyIdx + 1) story.removeChild(story.lastChild);
 
       var bloques = cuerpo.split(/\n{2,}/).map(function (b) { return b.trim(); }).filter(Boolean);
       for (var b = 0; b < bloques.length; b++) {
         var parrafos = bloques[b].split(/\n+/).map(function (p) { return p.trim(); }).filter(Boolean);
         for (var k = 0; k < parrafos.length; k++) {
-          var p = document.createElement("qx-p");
-          p.setAttribute("class", bodyStyle);
-          var span = document.createElement("qx-span");
-          span.textContent = parrafos[k];
-          p.appendChild(span);
-          story.appendChild(p);
+          _construirParrafo(story, parrafos[k], bodyStyle, resetCuerpo);
         }
       }
     }
@@ -309,17 +382,13 @@
         var cls0 = pList[0].getAttribute("class");
         if (cls0 && cls0.trim()) bodyStyle = cls0;
       }
+      var resetCuerpo = _capturarResetCuerpo(story, bodyStyle);
       while (story.firstChild) story.removeChild(story.firstChild);
       var bloques = cuerpo.split(/\n{2,}/).map(function (b) { return b.trim(); }).filter(Boolean);
       for (var b = 0; b < bloques.length; b++) {
         var parrafos = bloques[b].split(/\n+/).map(function (p) { return p.trim(); }).filter(Boolean);
         for (var k = 0; k < parrafos.length; k++) {
-          var p = document.createElement("qx-p");
-          p.setAttribute("class", bodyStyle);
-          var span = document.createElement("qx-span");
-          span.textContent = parrafos[k];
-          p.appendChild(span);
-          story.appendChild(p);
+          _construirParrafo(story, parrafos[k], bodyStyle, resetCuerpo);
         }
       }
     }
@@ -561,7 +630,7 @@
     // Crea una caja NUEVA (via createElement, la vía que Quark reconoce) copiando los
     // atributos de `orig` (menos box-name), fijando la página, y clonando adentro sólo el
     // CONTENIDO (qx-story / qx-img). cloneNode del box entero no lo registra Quark.
-    function crearCajaDesde(orig, pag, shiftX, shiftY) {
+    function crearCajaDesde(orig, pag, shiftX, shiftY, nuevoNombre) {
       // cloneNode(true) copia FIELMENTE contenido + estilos. Quitar los identificadores de la
       // caja (box-id/uid los genera Quark; box-name debe ser único) para que no la descarte por
       // ID duplicado. (Nota: Quark no aplica la alineación/italic del párrafo a cajas creadas por
@@ -570,6 +639,8 @@
       try { nueva.removeAttribute("box-id"); }   catch (e0) {}
       try { nueva.removeAttribute("box-uid"); }  catch (e1) {}
       try { nueva.removeAttribute("box-name"); } catch (e2) {}
+      // Nombre único opcional: permite ubicar el clon con los helpers por box-name.
+      if (nuevoNombre) { try { nueva.setAttribute("box-name", nuevoNombre); } catch (eNn) {} }
       var st = nueva.getAttribute("style");
       if (st) {
         st = _setPagina(st, pag);
@@ -807,7 +878,53 @@
     // =========================================================
     // 🔹 FOTOS
     // =========================================================
+    // 2ª FOTO (secundaria): la maqueta universal no tiene caja de 2ª foto, así que se CLONA
+    // la foto principal (y su epígrafe) de cada plantilla ANTES de rellenar la principal, se
+    // la posiciona en foto2/epi2 y se la rellena con la imagen + caption de la foto secundaria.
+    function pegarFotoSecundaria() {
+      if (!geometria.foto2) return;
+      var sec = null;
+      for (var i = 0; i < fotos.length; i++)
+        if ((fotos[i].rol || "") === "secundaria") { sec = fotos[i]; break; }
+      if (!sec) return;
+      var secPath = (sec.path || "").trim();
+      var secEpi  = cleanHTML(sec.epigrafe || "");
+      var f2 = geometria.foto2, e2 = geometria.epi2;
+      for (var p = 0; p < FOTO_BOXES.length; p++) {
+        var pag = String(p + 1);
+        // Foto secundaria = clon de la foto principal de esta plantilla.
+        var fb = getPicBoxByName(FOTO_BOXES[p]);
+        if (fb && fb.parentNode) {
+          try {
+            var nf = "SecFoto" + p;
+            var cf = crearCajaDesde(fb, pag, 0, 0, nf);
+            fb.parentNode.appendChild(cf);
+            _clonesAgregados++;
+            moverCaja(nf, f2.x_mm, f2.y_mm);
+            redimensionarCaja(nf, f2.ancho_mm, f2.alto_mm);
+            if (secPath) setImagenEnBox(nf, secPath);
+          } catch (eF) { _geoDiag.push("foto2 clon ERROR pg=" + pag + ": " + eF); }
+        }
+        // Epígrafe secundaria = clon del epígrafe de esta plantilla.
+        var eb = getPicBoxByName(EPI_BOXES[p]);
+        if (eb && eb.parentNode && e2) {
+          try {
+            var ne = "SecEpi" + p;
+            var ce = crearCajaDesde(eb, pag, 0, 0, ne);
+            eb.parentNode.appendChild(ce);
+            _clonesAgregados++;
+            moverCaja(ne, e2.x_mm, e2.y_mm);
+            redimensionarCaja(ne, e2.ancho_mm, e2.alto_mm);
+            if (secEpi) setTextoEnBox(ne, secEpi);
+          } catch (eE) { _geoDiag.push("epi2 clon ERROR pg=" + pag + ": " + eE); }
+        }
+      }
+      _geoDiag.push("pegarFotoSecundaria: sec='" + (sec.nombre || "") + "' clones=" + _clonesAgregados);
+    }
+
     function pegarFotoPrincipal() {
+      // 2ª foto PRIMERO (clon temprano, con la principal aún vacía).
+      pegarFotoSecundaria();
       // Redimensionar la foto según la calibración (sólo si viene geometría de foto:
       // se emite cuando la nota es a 3 col / 3 ancha / 4 col). Delta sobre el borde
       // izquierdo/superior → no depende del origen de coordenadas.

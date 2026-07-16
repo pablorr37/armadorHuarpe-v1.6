@@ -120,6 +120,9 @@ VALORES_DEFAULT = {
     "epi_x_wide": "55,427", "epi_y_wide": "132,801", "epi_a_wide": "129,575", "epi_al_wide": "10,723",
     "epi_x_ancha": "55,427", "epi_y_ancha": "145,806", "epi_a_ancha": "129,573", "epi_al_ancha": "10,723",
     "epi_x_4col": "10,424", "epi_y_4col": "145,806", "epi_a_4col": "174,576", "epi_al_4col": "10,723",
+    # 2ª foto (secundaria) + su epígrafe: clon de la foto/epígrafe principal a estas coords.
+    "foto2_x": "55,426", "foto2_y": "148,5", "foto2_a": "84,324", "foto2_al": "54,251",
+    "epi2_x": "54,692", "epi2_y": "202,751", "epi2_a": "84,147", "epi2_al": "10,723",
     # X/Y = posición DESEADA (esquina sup-izq del grupo) en la página, maqueta VACÍA (sin aviso).
     # Son el destino final que debe quedar en la página. moverGrupo (PegarNota v6) le suma la
     # compensación del pasteboard (COMP_X/COMP_Y). El bot los usa directo en el panel de medidas.
