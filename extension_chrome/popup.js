@@ -8,6 +8,38 @@
 
 var FALLBACK_SECCIONES = ['Cultura','Deportes','Economía','Locales','Política','Policiales'];
 
+// Secciones ESPECIALES (textuales del bloque "Textuales"), normalizadas. Las escribe Python
+// en secciones_textuales.json (chrome_watcher). Se cargan al abrir el popup.
+var SECCIONES_TEXTUALES = [];
+
+// Normaliza igual que el JS de pegado (seccionNorm) y que Python: trim, minúsculas, sin acentos.
+function normSeccion(s) {
+  return (s || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function conArmadorFolder(cb) {
+  chrome.downloads.search({ orderBy: ['-startTime'], limit: 50 }, function(items) {
+    var match = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].filename && /armadorhuarpe/i.test(items[i].filename)) { match = items[i]; break; }
+    }
+    if (!match) { cb(null); return; }
+    var normalized = match.filename.replace(/\\/g, '/');
+    var m = normalized.match(/^(.+?armadorhuarpe\/)/i);
+    cb(m ? 'file:///' + m[1].replace(/^\//, '') : null);
+  });
+}
+
+function loadSeccionesTextuales() {
+  conArmadorFolder(function(base) {
+    if (!base) return;
+    fetch(base + 'secciones_textuales.json')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { SECCIONES_TEXTUALES = (d && d.secciones_textuales) || []; })
+      .catch(function() {});
+  });
+}
+
 function buildSeccionSelect(lista) {
   var sel = document.getElementById('seccion');
   sel.innerHTML = '<option value="">— Sin sección —</option>';
@@ -69,6 +101,7 @@ document.getElementById('seccion').addEventListener('change', function() {
 });
 
 loadSecciones();
+loadSeccionesTextuales();
 
 // ── Sección por página (la define Python) ────────────────────
 // Cuando el usuario coloca la página, autoselecciona la sección configurada en
@@ -200,7 +233,7 @@ function downloadImage(imageUrl, filename) {
 // No puede referenciar variables externas del popup.
 // Todos los helpers deben estar definidos dentro de ella.
 
-function extractNoteData() {
+function extractNoteData(esEspecial) {
 
   function decodeHTML(str) {
     if (!str) return '';
@@ -213,8 +246,44 @@ function extractNoteData() {
     return (str || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
+  // Extracción ESPECIAL de textuales (secciones tipo Café): ubica el encabezado "Textuales"
+  // y toma cada <p> de los <blockquote> que le siguen (1º→caja 1, 2º→caja 2). Ignora los
+  // blockquotes/pull-quotes del resto del cuerpo.
+  function textualesDeBloqueTextuales(rootEl) {
+    function norm(s) { return (s || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+    function limpiarCita(s) {
+      s = (s || '').replace(/[“‟«‹]/g, '"').replace(/[”„»›]/g, '"');
+      return s.replace(/\s+/g, ' ').trim();
+    }
+    var heads = rootEl.querySelectorAll('h1,h2,h3,h4,h5,h6');
+    var head = null;
+    for (var i = 0; i < heads.length; i++) {
+      if (norm(heads[i].textContent) === 'textuales') head = heads[i];  // último gana
+    }
+    if (!head) return [];
+    var out = [];
+    var el = head.nextElementSibling;
+    while (el) {
+      if (/^H[1-6]$/.test(el.tagName)) break;              // otro encabezado → fin del bloque
+      if (el.tagName === 'BLOCKQUOTE') {
+        var ps = el.querySelectorAll('p');
+        if (ps.length) {
+          for (var j = 0; j < ps.length; j++) {
+            var t = limpiarCita(ps[j].textContent);
+            if (t) out.push(t);
+          }
+        } else {
+          var t2 = limpiarCita(el.textContent);
+          if (t2) out.push(t2);
+        }
+      }
+      el = el.nextElementSibling;
+    }
+    return out;
+  }
+
   // Transliteración 1:1 de _render_body_and_qr_links (manager_scraper.py:310)
-  function htmlToCuerpo(html) {
+  function htmlToCuerpo(html, esEspecial) {
     var tmp = document.createElement('div');
     tmp.innerHTML = html;
 
@@ -325,6 +394,12 @@ function extractNoteData() {
       body += '\n\n' + uniqQr.map(function(u) { return 'Link para el QR: ' + u; }).join('\n');
     }
 
+    // Sección especial: los textuales son SÓLO los del bloque "Textuales" (no todos los
+    // blockquotes de la nota). Si no hay bloque "Textuales", queda vacío.
+    if (esEspecial) {
+      textualesAuto = textualesDeBloqueTextuales(tmp);
+    }
+
     return { body: body, textualesAuto: textualesAuto };
   }
 
@@ -386,7 +461,7 @@ function extractNoteData() {
     if (ckeIframe) {
       _ckeDoc = ckeIframe.contentDocument || (ckeIframe.contentWindow && ckeIframe.contentWindow.document);
       if (_ckeDoc) {
-        var cuerpoResult = htmlToCuerpo(_ckeDoc.body.innerHTML || '');
+        var cuerpoResult = htmlToCuerpo(_ckeDoc.body.innerHTML || '', esEspecial);
         cuerpo = cuerpoResult.body;
         textualesAuto = cuerpoResult.textualesAuto;
       }
@@ -515,10 +590,14 @@ document.getElementById('descargarBtn').addEventListener('click', async function
       return;
     }
 
+    // ¿Sección especial (textuales del bloque "Textuales")?
+    var esEspecial = SECCIONES_TEXTUALES.indexOf(normSeccion(seccion)) >= 0;
+
     // Inyectar extractNoteData en la pestaña activa
     var injected = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: extractNoteData,
+      args: [esEspecial],
     });
 
     var result = injected[0] && injected[0].result;

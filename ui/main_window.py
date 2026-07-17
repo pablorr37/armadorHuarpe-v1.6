@@ -1137,6 +1137,11 @@ class MainWindow(QMainWindow):
         action_secciones.triggered.connect(self._abrir_config_secciones)
         menu_config.addAction(action_secciones)
 
+        # Secciones especiales (textuales del bloque "Textuales")
+        action_secciones_esp = QAction("Secciones especiales...", self)
+        action_secciones_esp.triggered.connect(self._abrir_config_secciones_textuales)
+        menu_config.addAction(action_secciones_esp)
+
         menu_config.addSeparator()
 
         # === Submenú Seleccionar Quark ===
@@ -1770,6 +1775,7 @@ class MainWindow(QMainWindow):
             self.pdf_orq = PdfExportOrchestrator(
                 self._pdf_listar_mandar, self._pdf_quark_exe, self._pdf_root,
                 fn_confirmar_inicio=self._pdf_confirmar_inicio,
+                fn_pre_export=self._pdf_pre_export,
                 fn_coords_export=self._pdf_coords_export,
                 modo=config_global.pdf_export_modo,
                 simular=config_global.auto_mode_simular, parent=self)
@@ -5788,6 +5794,24 @@ class MainWindow(QMainWindow):
             _log.warning("Cuenta regresiva P%s falló: %s", numero, e)
             return True
 
+    def _pdf_pre_export(self, folio) -> str:
+        """Gate previo al export (hilo GUI), ANTES de la cuenta regresiva. Si ya existe un PDF
+        para la página (imprenta/OK), avisa SIN cuenta regresiva: 'reemplazar' → reexporta,
+        'descartar' → no reexporta. Si no hay PDF, exporta directo. Devuelve 'exportar'|'descartar'."""
+        try:
+            if self.pdf_orq is not None and self.pdf_orq.simular:
+                return "exportar"
+            pdf = self.controller.file_service.find_pdf_for_page(int(folio))
+            if not pdf:
+                return "exportar"
+            from ui.countdown_dialog import AvisoPdfExistenteDialog
+            dlg = AvisoPdfExistenteDialog(folio, parent=self)
+            dlg.exec_()
+            return "exportar" if dlg.eleccion == "reemplazar" else "descartar"
+        except Exception as e:
+            _log.warning("pre_export PDF P%s falló: %s", folio, e)
+            return "exportar"
+
     def _pdf_confirmar_inicio(self, folio) -> bool:
         """Gate previo al export PDF (hilo GUI): misma cuenta regresiva cancelable que el
         armador (usa el mismo `auto_delay_segundos`). True si continúa/expira, False si cancela."""
@@ -6400,6 +6424,9 @@ class MainWindow(QMainWindow):
                     quark_exe = cfg2.get("apps", "quark2018", fallback="").strip()
                     if quark_exe and Path(quark_exe).exists():
                         subprocess.Popen([quark_exe, str(qxp_path)], shell=False)
+                        # Cartel "2 noticias" también en este camino (el qxp abierto puede estar
+                        # en base/final/mandar, no solo materiales) → que aparezca siempre.
+                        self._al_abrir_qxp(pagina)
                     else:
                         _log.error("No se encontró el ejecutable de Quark 2018: %s", quark_exe)
                 else:
@@ -7164,6 +7191,13 @@ class MainWindow(QMainWindow):
         dlg = SeccionesConfigDialog(self)
         if hasattr(self, '_chrome_watcher') and self._chrome_watcher:
             dlg.secciones_guardadas.connect(self._chrome_watcher.reload_secciones)
+        dlg.exec_()
+
+    def _abrir_config_secciones_textuales(self):
+        from ui.secciones_textuales_dialog import SeccionesTextualesDialog
+        dlg = SeccionesTextualesDialog(self)
+        if hasattr(self, '_chrome_watcher') and self._chrome_watcher:
+            dlg.secciones_guardadas.connect(self._chrome_watcher.reload_secciones_textuales)
         dlg.exec_()
 
 

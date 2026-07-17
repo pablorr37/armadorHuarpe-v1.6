@@ -54,15 +54,71 @@ class NoteData:
     galeria: List[dict] | None = None
     firmado: bool = False
     quotes: list = None
+    quotes_especiales: list = None   # textuales del bloque "Textuales" (secciones especiales)
 
     def __post_init__(self):
         if self.quotes is None:
             self.quotes = []
+        if self.quotes_especiales is None:
+            self.quotes_especiales = []
 
     
 
 class ScraperError(FileServiceError):
     pass
+
+
+def _norm_txt(s: str) -> str:
+    """trim + minúsculas + sin acentos (para comparar el encabezado 'Textuales')."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", (s or "").strip().lower())
+    return "".join(c for c in s if not unicodedata.combining(c))
+
+
+def _limpiar_cita(s: str) -> str:
+    s = (s or "")
+    for ch in ("“", "‟", "«", "‹", "”", "„", "»", "›"):
+        s = s.replace(ch, '"')
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _secciones_textuales_norm() -> set:
+    """Conjunto normalizado de secciones especiales (textuales del bloque 'Textuales')."""
+    try:
+        from config.config import config_global
+        return {_norm_txt(s) for s in config_global.secciones_textuales}
+    except Exception:
+        return set()
+
+
+def _textuales_bloque_textuales(soup) -> list:
+    """Textuales del bloque 'Textuales': localiza el encabezado h1..h6 cuyo texto sea
+    'textuales' y toma cada <p> de los <blockquote> hermanos siguientes (hasta el próximo
+    encabezado). Paralelo del `textualesDeBloqueTextuales` de la extensión."""
+    if soup is None:
+        return []
+    HEADS = ("h1", "h2", "h3", "h4", "h5", "h6")
+    head = None
+    for h in soup.find_all(list(HEADS)):
+        if _norm_txt(h.get_text(" ", strip=True)) == "textuales":
+            head = h   # último gana (el bloque va al final)
+    if head is None:
+        return []
+    out: list = []
+    for sib in head.next_siblings:
+        name = (getattr(sib, "name", "") or "").lower()
+        if not name:
+            continue   # NavigableString
+        if name in HEADS:
+            break
+        if name == "blockquote":
+            ps = sib.find_all("p")
+            textos = [p.get_text(" ", strip=True) for p in ps] if ps else [sib.get_text(" ", strip=True)]
+            for t in textos:
+                t = _limpiar_cita(t)
+                if t:
+                    out.append(t)
+    return out
 
 
 class ManagerScraper:
@@ -307,7 +363,7 @@ class ManagerScraper:
         except Exception:
             return False
 
-    def _render_body_and_qr_links(self, html_fragment: str, page_url: str) -> tuple[str, list[str], list[str]]:
+    def _render_body_and_qr_links(self, html_fragment: str, page_url: str) -> tuple[str, list[str], list[str], list[str]]:
         """
         Renderiza el cuerpo preservando subtítulos y recolectando links de embeds.
         Captura iframes/anchors aunque estén dentro de <p>, <div>, <li>, <blockquote>.
@@ -464,9 +520,12 @@ class ManagerScraper:
 
         body = "".join(out).strip()
 
-        
+        # Textuales ESPECIALES: los <p> de los <blockquote> que siguen al encabezado "Textuales"
+        # (para secciones tipo Café; el llamador elige entre esta lista y blockquote_quotes).
+        especiales = _textuales_bloque_textuales(root)
+
         # IMPORTANTE: no agregamos aquí los "Link para el QR:"
-        return body, uniq_links, blockquote_quotes
+        return body, uniq_links, blockquote_quotes, especiales
         
 
     
@@ -550,8 +609,10 @@ class ManagerScraper:
 
 
         if raw_html:
-            body_txt, body_qr_links, bq_quotes = self._render_body_and_qr_links(raw_html, page_url)
+            body_txt, body_qr_links, bq_quotes, bq_especiales = \
+                self._render_body_and_qr_links(raw_html, page_url)
             note.quotes = bq_quotes
+            note.quotes_especiales = bq_especiales
 
             # --- Merge QR links: Multimedia (prioridad) + Body (fallback) ---
             final_qr_links = []
@@ -1238,7 +1299,10 @@ class ManagerScraper:
             "autor_modificacion": note.autor_modificacion,
             "fecha_creacion": note.fecha_creacion or now_iso,
             "fecha_modificacion": note.fecha_modificacion or now_iso,
-            "textuales_auto": note.quotes,
+            # Sección especial → textuales del bloque "Textuales"; si no, todos los blockquotes.
+            "textuales_auto": (note.quotes_especiales
+                               if _norm_txt(seccion_nota) in _secciones_textuales_norm()
+                               else note.quotes),
         }
         try:
             json_path = txt_path.with_suffix(".json")

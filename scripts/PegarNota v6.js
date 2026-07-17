@@ -291,6 +291,14 @@
       // DESCONECTADO: pegado plano (un span sin clase → hereda el estilo del cuerpo). El
       // formateo especial queda debajo, intacto, para reconectarlo con FORMATO_ESPECIAL_CUERPO.
       if (!FORMATO_ESPECIAL_CUERPO) {
+        // Intertítulo (##): sólo agregar un salto de línea (párrafo vacío antes). NO se quitan
+        // los ## ni se aplica estilo — queda el texto tal cual, en su propio párrafo.
+        if (/^#{2,}/.test(texto)) {
+          var pVacio = document.createElement("qx-p");
+          pVacio.setAttribute("class", bodyStyle);
+          pVacio.appendChild(document.createElement("qx-span"));
+          story.appendChild(pVacio);
+        }
         span.textContent = texto;
         p.appendChild(span);
         story.appendChild(p);
@@ -752,6 +760,7 @@
     var notas        = [];
     var maqueta_path = "";
     var geometria    = {};
+    var seccionesTextuales = [];   // secciones especiales (normalizadas) que pegan textuales de café
 
     var _appdataScripts = "C:/Users/usuario/AppData/Roaming/ArmadorHuarpe/scripts/";
     var rutaJSON = "";
@@ -783,6 +792,7 @@
         notas        = data.notas       || [];
         maqueta_path = data.maqueta_path || "";
         geometria    = data.geometria   || {};
+        seccionesTextuales = data.secciones_textuales || [];
         try { _geoDiag.push("geometria recibida: " + JSON.stringify(geometria)); }
         catch (eG) { _geoDiag.push("geometria recibida (no serializable)"); }
         _geoDiag.push("rutaJSON=" + rutaJSON);
@@ -827,6 +837,11 @@
     }
 
     var seccionNorm = normalizar(seccion);
+    // Sección ESPECIAL (textuales del bloque "Textuales", hoy Café): los textuales van por la vía
+    // dedicada (pegarTextualesCafePolitica), no por el textual estructurado. La lista viene de
+    // config vía data_pagina.json; "cafe de la politica" queda como respaldo si no llegó.
+    var esSeccionEspecial = seccionesTextuales.indexOf(seccionNorm) >= 0 ||
+                            (seccionesTextuales.length === 0 && seccionNorm === "cafe de la politica");
     var firmaCorta  = firma.split("\n")[0].split(",")[0].trim();
 
     // =========================================================
@@ -886,9 +901,12 @@
       var sec = null;
       for (var i = 0; i < fotos.length; i++)
         if ((fotos[i].rol || "") === "secundaria") { sec = fotos[i]; break; }
-      if (!sec) return;
-      var secPath = (sec.path || "").trim();
-      var secEpi  = cleanHTML(sec.epigrafe || "");
+      // Tolerancia: si hay geometría de 2ª foto, se clona y redimensiona la caja (y su
+      // epígrafe) SIEMPRE, aunque la imagen secundaria todavía no exista (no se sacó/descargó
+      // → puede no venir la entrada 'secundaria' en fotos). La imagen/caption se rellenan sólo
+      // si llegaron. Así se pega lo que exista y las cajas quedan listas para la que falte.
+      var secPath = sec ? (sec.path || "").trim() : "";
+      var secEpi  = sec ? cleanHTML(sec.epigrafe || "") : "";
       var f2 = geometria.foto2, e2 = geometria.epi2;
       for (var p = 0; p < FOTO_BOXES.length; p++) {
         var pag = String(p + 1);
@@ -919,7 +937,8 @@
           } catch (eE) { _geoDiag.push("epi2 clon ERROR pg=" + pag + ": " + eE); }
         }
       }
-      _geoDiag.push("pegarFotoSecundaria: sec='" + (sec.nombre || "") + "' clones=" + _clonesAgregados);
+      _geoDiag.push("pegarFotoSecundaria: sec='" + (sec ? (sec.nombre || "") : "(sin entrada/imagen)") +
+                    "' secPath=" + (secPath ? "sí" : "no") + " clones=" + _clonesAgregados);
     }
 
     function pegarFotoPrincipal() {
@@ -1079,7 +1098,9 @@
       // Plantillas destino a clonar (además de la 1, donde se llena y posiciona el recurso).
       var PLANTILLAS_CLON = ["2", "3"];
       var recPos = geometria.recursos || {};
-      if (recPos.textual && tx && tx.tipo) {
+      // En secciones especiales (Café) el textual va por la vía dedicada (bloque "Textuales"):
+      // NO se pega ni clona el textual ESTRUCTURADO con tipo/orador de la maqueta universal.
+      if (!esSeccionEspecial && recPos.textual && tx && tx.tipo) {
         var grpTx = RECURSO_GRUPO["textual_" + tx.tipo];
         if (grpTx) {
           moverGrupo(grpTx, recPos.textual.x_mm, recPos.textual.y_mm);
@@ -1161,9 +1182,9 @@
       pegarUniversal();
     }
 
-    // Café de la Política: el texto/foto/aviso se pegan por la rama universal;
-    // los textuales auto son un complemento dedicado que siempre se ejecuta.
-    if (seccionNorm === "cafe de la politica") pegarTextualesCafePolitica();
+    // Secciones especiales (configurables, hoy Café de la Política): el texto/foto/aviso se pegan
+    // por la rama universal; los textuales del bloque "Textuales" son un complemento dedicado.
+    if (esSeccionEspecial) pegarTextualesCafePolitica();
 
     // =========================================================
     // 🔹 DIAGNÓSTICO

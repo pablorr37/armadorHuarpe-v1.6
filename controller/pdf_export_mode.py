@@ -264,7 +264,7 @@ class PdfExportOrchestrator(QObject):
 
     def __init__(self, fn_listar_mandar, fn_quark_exe, fn_pdf_root,
                  fn_finalizado_ok=None, fn_confirmar_inicio=None, fn_coords_export=None,
-                 modo: str = MODO_BOT, simular=False, parent=None):
+                 fn_pre_export=None, modo: str = MODO_BOT, simular=False, parent=None):
         """
         fn_listar_mandar() -> list[(folio, Path)]   (qxp candidatos en 'mandar')
         fn_quark_exe() -> str                        (ejecutable de Quark configurado)
@@ -272,6 +272,9 @@ class PdfExportOrchestrator(QObject):
         fn_finalizado_ok(folio) -> None               (post-OK en hilo GUI, opcional)
         fn_confirmar_inicio(folio) -> bool            (gate en hilo GUI: cuenta regresiva
                                                        cancelable antes de tomar el control)
+        fn_pre_export(folio) -> "exportar"|"descartar"  (gate en hilo GUI ANTES de la cuenta
+                                                       regresiva: si ya hay PDF, avisa; "descartar"
+                                                       saltea la página sin reexportar)
         fn_coords_export() -> (coord_export_script, coord_play)  (calibración del modo script)
         modo: MODO_BOT (pyautogui, default) | MODO_SCRIPT (ExportarPDF.js) — ver set_modo().
         """
@@ -281,6 +284,7 @@ class PdfExportOrchestrator(QObject):
         self._fn_pdf_root = fn_pdf_root
         self._fn_finalizado_ok = fn_finalizado_ok or (lambda _n: None)
         self._fn_confirmar_inicio = fn_confirmar_inicio or (lambda _n: True)
+        self._fn_pre_export = fn_pre_export or (lambda _n: "exportar")
         self._fn_coords_export = fn_coords_export or (lambda: (None, None))
         self._modo = modo if modo in (MODO_BOT, MODO_SCRIPT) else MODO_BOT
         self._enabled = False
@@ -423,6 +427,21 @@ class PdfExportOrchestrator(QObject):
                 return
 
         self._activa = folio
+
+        # Aviso si ya existe un PDF para la página (imprenta/OK) y reapareció el qxp en Mandar.
+        # Gate en hilo GUI SIN cuenta regresiva: "descartar" → se saltea (no reexporta) y sigue
+        # con la próxima; "exportar" (no hay PDF, o el usuario eligió Reemplazar) → flujo normal.
+        try:
+            decision = self._fn_pre_export(folio)
+        except Exception as e:
+            _log.warning("pdf pre_export P%02d falló: %s", folio, e)
+            decision = "exportar"
+        if decision == "descartar":
+            self._activa = None
+            self._procesadas.add(folio)
+            self.log.emit(f"P{folio:02d}: conversión descartada (ya existe PDF).")
+            self._intentar_siguiente()
+            return
 
         # Cuenta regresiva cancelable ANTES de abrir Quark y tomar el control del mouse/teclado
         # (misma alerta que el bot armador). Si cancela, se pospone y se reintenta en el próximo poll.

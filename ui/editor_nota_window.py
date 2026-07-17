@@ -2261,6 +2261,13 @@ class EditorNotaWindow(QMainWindow):
     def _estado_alerta_textuales(self):
         """None si está todo completo; si no, ('bloqueante'|'aviso', mensaje).
         Los bloqueantes impiden 'Guardar para armar' y 'armado automático' (no el guardado)."""
+        # Secciones especiales (Café): los textuales van por la vía dedicada (bloque "Textuales"),
+        # no por el textual estructurado con tipo/orador → sin advertencia ni bloqueo.
+        try:
+            if self.controller.es_seccion_textual(self._seccion):
+                return None
+        except Exception:
+            pass
         sel = self._textual_cards.selected_items()
         label = self._cb_textual_tipo.currentText()
         if not sel:

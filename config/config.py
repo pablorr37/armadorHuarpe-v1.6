@@ -151,6 +151,26 @@ class Config:
             cfg.write(f)
 
     @property
+    def secciones_textuales(self) -> list:
+        """Secciones ESPECIALES cuyos textuales se extraen del bloque 'Textuales' de la nota
+        (hoy Café de la Política). Nombres tal cual los escribe el usuario (display)."""
+        cfg = configparser.ConfigParser()
+        if not cfg.read(self.CONFIG_FILE, encoding="utf-8-sig"):
+            cfg.read(self.CONFIG_FILE, encoding="cp1252")
+        raw = cfg.get("SECCIONES", "secciones_textuales", fallback="")
+        items = [s.strip() for s in raw.split(",") if s.strip()]
+        return [self._fix_mojibake(s) for s in items]
+
+    def save_secciones_textuales(self, lista: list) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8-sig")
+        if "SECCIONES" not in cfg:
+            cfg["SECCIONES"] = {}
+        cfg["SECCIONES"]["secciones_textuales"] = ", ".join(lista)
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    @property
     def qr_overlay_pos(self):
         """(x, y) guardado de la columna de íconos del overlay QR, o None."""
         cfg = configparser.ConfigParser()

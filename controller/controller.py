@@ -1811,7 +1811,10 @@ class ArmadorController:
                 comp["firma"] = bool(nd.get("firma_habilitada"))
                 if comp["firma"]:
                     comp["firma_nombre"] = (nd.get("firma") or "").strip()
-                comp["qr"] = bool(nd.get("qr_path") or (nd.get("_debug_qr") or {}).get("qrLinks"))
+                # Fuente de verdad = selección del editor (qr_path). La detección/conversión
+                # de links por el Chrome watcher (_debug_qr.qrLinks) NO implica que el QR vaya
+                # en la página, así que NO se considera acá.
+                comp["qr"] = bool(nd.get("qr_path"))
                 break
         except Exception as e:
             _log.debug("composicion_pagina P%02d: %s", numero, e)
@@ -1837,6 +1840,29 @@ class ArmadorController:
             return float(str(raw).strip().replace(",", "."))
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _secciones_textuales_norm() -> list:
+        """Secciones especiales (textuales del bloque 'Textuales') NORMALIZADAS (trim/lower/sin
+        acentos), para comparar contra `seccionNorm` en PegarNota v6."""
+        import unicodedata
+
+        def _n(s: str) -> str:
+            s = unicodedata.normalize("NFKD", (s or "").strip().lower())
+            return "".join(c for c in s if not unicodedata.combining(c))
+
+        try:
+            return sorted({_n(s) for s in config_global.secciones_textuales if s.strip()})
+        except Exception:
+            return []
+
+    def es_seccion_textual(self, seccion: str) -> bool:
+        """True si `seccion` es una sección ESPECIAL (textuales del bloque 'Textuales', hoy Café):
+        sus textuales van por la vía dedicada, no por el textual estructurado con tipo/orador."""
+        import unicodedata
+        s = unicodedata.normalize("NFKD", (seccion or "").strip().lower())
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        return bool(s) and s in set(self._secciones_textuales_norm())
 
     def _geometria_para_js(self, comp: dict) -> dict:
         """Geometría en mm de documento para que PegarNota v6 la aplique directo al DOM:
@@ -2163,6 +2189,9 @@ class ArmadorController:
                 # Geometría en mm (foto: ancho/alto; recursos: X/Y) para que PegarNota v6 la
                 # aplique directo al DOM de Quark. Vacío si no hay foto3 ni recursos calibrados.
                 "geometria":          self._geometria_para_js(comp),
+                # Secciones especiales (textuales del bloque "Textuales"), NORMALIZADAS, para que
+                # PegarNota v6 decida si pega los textuales de café (en vez del hardcode de sección).
+                "secciones_textuales": self._secciones_textuales_norm(),
             }
 
             ruta_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

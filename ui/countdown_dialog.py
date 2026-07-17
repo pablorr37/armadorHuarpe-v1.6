@@ -6,7 +6,8 @@ tiempo llega a 0 sin cancelar, el diálogo se acepta y el pegado continúa.
 """
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QProgressBar, QDialogButtonBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QDialogButtonBox,
+    QPushButton,
 )
 from PyQt5.QtCore import Qt, QTimer
 
@@ -84,3 +85,50 @@ class CountdownDialog(QDialog):
     def reject(self):
         self._timer.stop()
         super().reject()
+
+
+class AvisoPdfExistenteDialog(QDialog):
+    """Aviso SIN cuenta regresiva (mismo look que CountdownDialog): ya existe un PDF para la
+    página y reapareció un qxp en Mandar. Tras `exec_()`, `self.eleccion` es 'reemplazar' o
+    'descartar' (default seguro: 'descartar', no reexporta)."""
+
+    def __init__(self, folio, parent=None):
+        super().__init__(parent)
+        self.eleccion = "descartar"
+        n = int(folio)
+        self.setWindowTitle(f"Exportar PDF — página {n:02d}")
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setMinimumWidth(420)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("<b>Ya existe un PDF para esta página</b>", alignment=Qt.AlignCenter))
+        msg = QLabel(
+            f"Aviso: ya hay un archivo PDF para la página {n:02d} y se detectó un archivo "
+            "Quark en Mandar.<br>¿Desea reemplazar el PDF o descartar la conversión?"
+        )
+        msg.setAlignment(Qt.AlignCenter)
+        msg.setWordWrap(True)
+        lay.addWidget(msg)
+
+        fila = QHBoxLayout()
+        btn_desc = QPushButton("Descartar conversión")
+        btn_reemp = QPushButton("Reemplazar PDF")
+        btn_desc.clicked.connect(self._descartar)
+        btn_reemp.clicked.connect(self._reemplazar)
+        fila.addWidget(btn_desc)
+        fila.addWidget(btn_reemp)
+        lay.addLayout(fila)
+
+    def _reemplazar(self):
+        self.eleccion = "reemplazar"
+        self.accept()
+
+    def _descartar(self):
+        self.eleccion = "descartar"
+        self.reject()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.raise_()
+        self.activateWindow()

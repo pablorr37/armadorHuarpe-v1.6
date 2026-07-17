@@ -71,6 +71,7 @@ class ChromeWatcher(QObject):
     _WATCH_DIR      = Path.home() / "Downloads" / "armadorHuarpe"
     _SECCIONES_JSON = _WATCH_DIR / "secciones.json"
     _PAGINAS_SECCIONES_JSON = _WATCH_DIR / "paginas_secciones.json"
+    _SECCIONES_TEXTUALES_JSON = _WATCH_DIR / "secciones_textuales.json"
 
     def __init__(self, file_service, by: str = ""):
         super().__init__()
@@ -85,6 +86,7 @@ class ChromeWatcher(QObject):
         self._sync_compartido()
         self._write_secciones_json()
         self._write_paginas_secciones_json()
+        self._write_secciones_textuales_json()
         self._timer.start(interval_ms)
         # Banner de identidad: PID + archivo del módulo realmente cargado.
         # Sirve para detectar código viejo en memoria / procesos zombie.
@@ -111,6 +113,29 @@ class ChromeWatcher(QObject):
             _log.debug("secciones.json actualizado (%d secciones)", len(data["secciones"]))
         except Exception as exc:
             _log.warning("No se pudo escribir secciones.json: %s", exc)
+
+    @staticmethod
+    def _norm_seccion(s: str) -> str:
+        """Normaliza un nombre de sección igual que el JS (`seccionNorm`): trim, minúsculas y
+        sin acentos. 'Café de la Política' → 'cafe de la politica'."""
+        import unicodedata
+        s = unicodedata.normalize("NFKD", (s or "").strip().lower())
+        return "".join(c for c in s if not unicodedata.combining(c))
+
+    def _write_secciones_textuales_json(self) -> None:
+        """Lista NORMALIZADA de secciones especiales (textuales del bloque 'Textuales') para
+        que la extensión decida el modo de extracción. La extensión normaliza su sección igual."""
+        from config.config import config_global
+        try:
+            self._WATCH_DIR.mkdir(parents=True, exist_ok=True)
+            norm = sorted({self._norm_seccion(s) for s in config_global.secciones_textuales if s.strip()})
+            self._SECCIONES_TEXTUALES_JSON.write_text(
+                json.dumps({"secciones_textuales": norm}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            _log.debug("secciones_textuales.json actualizado (%d)", len(norm))
+        except Exception as exc:
+            _log.warning("No se pudo escribir secciones_textuales.json: %s", exc)
 
     def _write_paginas_secciones_json(self) -> None:
         """#6 — mapa {pagina: seccion} con las secciones configuradas en Python,
@@ -290,6 +315,11 @@ class ChromeWatcher(QObject):
     def reload_secciones(self, lista: list) -> None:
         """Llamado por el dialog de secciones cuando el usuario guarda."""
         self.publicar_secciones(lista)
+
+    def reload_secciones_textuales(self, _lista: list) -> None:
+        """Llamado por el dialog de Secciones especiales al guardar: reescribe el JSON que
+        lee la extensión (lista NORMALIZADA desde config)."""
+        self._write_secciones_textuales_json()
 
     # ── Escaneo ──────────────────────────────────────────────
 
