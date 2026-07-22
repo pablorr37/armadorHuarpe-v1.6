@@ -178,13 +178,19 @@ class _PaginaWorker(QThread):
             # como activo. Si queda bloqueado por un diálogo nativo (proyecto bloqueado
             # [315], fuentes faltantes) o Quark no abre a tiempo, esto simplemente agota
             # el timeout — no se intenta cerrar el cartel por pyautogui (ver docstring de
-            # quark_cdp.esperar_proyecto_listo).
+            # quark_cdp.esperar_proyecto_listo). Timeout generoso (arranque en frío de
+            # Quark 2018 completo puede tardar bastante en tener el motor CEF/JS listo
+            # para responder por CDP, más que en solo mostrar la ventana).
+            _log.info("P%02d: esperando que Quark abra '%s' (activeProject por CDP)…",
+                      n, self.nombre_qxp)
             self.paso.emit(f"P{n:02d}: esperando que Quark abra el proyecto…")
             if not quark_cdp.esperar_proyecto_listo(self.nombre_qxp,
-                                                     timeout=self.espera_apertura + 20.0):
+                                                     timeout=self.espera_apertura + 80.0):
+                _log.warning("P%02d: Quark no respondió por CDP → reintento en el próximo poll.", n)
                 self.paso.emit(f"P{n:02d}: Quark no respondió → reintento en el próximo poll.")
                 self.terminado.emit(n, REINTENTAR_FOCO)
                 return
+            _log.info("P%02d: proyecto activo confirmado por CDP.", n)
 
             # Disparo del script (PegarNota v6) vía CDP — sin clics, sin foco. A partir de
             # acá el JS hace TODO: pega, geometría (foto/recursos/clones/epígrafes) y, en
@@ -210,6 +216,7 @@ class _PaginaWorker(QThread):
                 self.terminado.emit(n, ERROR)
                 return
 
+            _log.info("P%02d: armado_status.json confirmado — pegado OK.", n)
             a.minimizar_quark()          # ctypes/Win32 (no pyautogui)
             _limpiar_armado_status()
             self.terminado.emit(n, OK)

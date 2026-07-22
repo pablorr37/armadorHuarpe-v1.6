@@ -250,11 +250,16 @@ class _ExportWorker(QThread):
         dispara ExportarPDF.js (exporta + guarda + cierra el proyecto por su cuenta) y
         espera su flag de status. Nunca cae a pyautogui — si CDP no responde, la página
         se trata como fallo de apertura y se reintenta en el próximo poll."""
+        _log.info("P%02d: esperando que Quark abra '%s' (activeProject por CDP)…",
+                  n, self.qxp_path.stem)
         self.paso.emit(f"P{n:02d}: esperando que Quark abra el proyecto…")
+        # Timeout generoso (arranque en frío de Quark 2018 puede tardar bastante en tener
+        # el motor CEF/JS listo para responder por CDP, más que en solo mostrar la ventana).
         if not quark_cdp.esperar_proyecto_listo(self.qxp_path.stem,
-                                                 timeout=ESPERA_APERTURA + 20.0):
+                                                 timeout=ESPERA_APERTURA + 80.0):
             _log.warning("P%02d: Quark no respondió por CDP (proyecto no quedó activo).", n)
             return False
+        _log.info("P%02d: proyecto activo confirmado por CDP.", n)
 
         output_path = str(self.pdf_root / f"{nombre}.pdf")
         marcar_export_pendiente(n, output_path, PDF_STYLE)
@@ -271,6 +276,7 @@ class _ExportWorker(QThread):
             encontrado, exportado, error = _leer_export_status(n)
             if encontrado:
                 if exportado:
+                    _log.info("P%02d: export_pdf_status.json confirmado — export OK.", n)
                     return True
                 _log.warning("P%02d: ExportarPDF.js reportó error: %s", n, error)
                 return False

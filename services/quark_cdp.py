@@ -83,7 +83,11 @@ def evaluar(ws_url: str, expression: str, timeout: float = 60.0) -> dict:
     Lanza CDPError si la conexión falla, hay timeout, o QX.js reporta una excepción."""
     import websocket  # websocket-client; import diferido: solo hace falta si se usa CDP.
 
-    ws = websocket.create_connection(ws_url, timeout=timeout)
+    try:
+        ws = websocket.create_connection(ws_url, timeout=timeout)
+    except Exception as e:
+        _log.warning("quark_cdp.evaluar: no se pudo conectar a %s (%s).", ws_url, e)
+        raise CDPError(f"No se pudo conectar al WebSocket ({ws_url}): {e}") from e
     eval_id = 2
     try:
         ws.send(json.dumps({"id": 1, "method": "Page.enable"}))
@@ -132,39 +136,83 @@ def evaluar(ws_url: str, expression: str, timeout: float = 60.0) -> dict:
 def esperar_proyecto_listo(nombre_esperado: str, puerto: int = PUERTO_DEFAULT,
                             timeout: float = 40.0, intervalo: float = 0.5) -> bool:
     """Espera a que el proyecto ACTIVO de QuarkXPress sea `nombre_esperado` (comparación
-    por substring, case-insensitive, contra `app.activeProject().name`), consultando por
-    CDP. No toca foco, mouse ni teclado: sirve de reemplazo de `focus_quark()` como señal
-    de "Quark ya abrió el archivo y está listo" sin molestar a otro operador que esté
-    usando la PC en ese momento.
+    exacta, case-insensitive, contra el nombre de archivo — sin extensión — que devuelve
+    `app.activeProject().getLocation()`), consultando por CDP. No toca foco, mouse ni
+    teclado: sirve de reemplazo de `focus_quark()` como señal de "Quark ya abrió el
+    archivo y está listo" sin molestar a otro operador que esté usando la PC.
+
+    IMPORTANTE (bug ya encontrado y corregido): `app.Project` en QX.js 2018 NO tiene una
+    propiedad `.name` — solo `projectID` (verificado en vivo introspeccionando el objeto:
+    `Object.keys(p)` da `["projectID"]`, `'name' in p` da `false`). Cuando no hay ningún
+    proyecto real activo, `app.activeProject()` igual devuelve un objeto "placeholder" con
+    `projectID === -1` (no null, no una instancia de `app.APIError`). Con `projectID` real
+    (>= 0), el archivo en disco se obtiene con `getLocation().path` (o `.sourceFilePath`
+    si `hasSourceFile` es true, caso de templates/proyectos read-only). La primera
+    implementación comparaba contra `String(p.name)`, que siempre daba el string literal
+    `"undefined"` — por eso nunca detectaba un proyecto listo.
+
+    También verificado en vivo: incluso con Quark YA corriendo (sin necesidad de arrancar
+    el proceso), `activeProject()` tardó ~24s en dejar de ser el placeholder tras abrir un
+    documento — de ahí que el timeout por defecto sea generoso.
 
     Cubre también, de forma indirecta, los casos que antes se manejaban clickeando
     diálogos nativos (proyecto bloqueado [315], fuentes faltantes): si uno de esos
-    carteles queda abierto, `app.activeProject()` nunca pasa a ser el proyecto esperado
-    y esta función simplemente agota el timeout y devuelve False — el llamador lo trata
-    como "Quark no respondió" (mismo camino que un fallo de apertura) en vez de intentar
-    cerrar el cartel. Si eso pasa, el cartel queda en pantalla hasta que un humano lo
-    note: es el costo aceptado de no tocar la sesión de otro operador.
+    carteles queda abierto, el proyecto nunca pasa a ser el esperado y esta función
+    simplemente agota el timeout y devuelve False — el llamador lo trata como "Quark no
+    respondió" (mismo camino que un fallo de apertura) en vez de intentar cerrar el
+    cartel. Si eso pasa, el cartel queda en pantalla hasta que un humano lo note: es el
+    costo aceptado de no tocar la sesión de otro operador.
 
     Devuelve True si el proyecto quedó activo dentro del timeout; False en cualquier
-    otro caso (Quark no abrió, CDP no disponible, o quedó bloqueado por un diálogo)."""
-    nombre_esperado = (nombre_esperado or "").strip().lower()
+    otro caso (Quark no abrió, CDP no disponible, o quedó bloqueado por un diálogo).
+
+    Logueo pensado para diagnosticar sin adivinar: si esto falla, el log dice si el
+    target CDP llegó a aparecer y qué archivo real tenía activo la última vez que se
+    pudo leer, comparado contra lo que se esperaba."""
+    nombre_esperado_norm = (nombre_esperado or "").strip().lower()
     expr = (
-        "(function(){try{var p=app.activeProject();"
-        "return p ? String(p.name) : null;}catch(e){return null;}})()"
+        "(function(){try{"
+        "var p=app.activeProject();"
+        "if(!p||p.projectID<0)return null;"
+        "var loc=p.getLocation();"
+        "if(loc instanceof app.APIError)return null;"
+        "var path=(loc.hasSourceFile&&loc.sourceFilePath)?loc.sourceFilePath:loc.path;"
+        "return String(path||'');"
+        "}catch(e){return null;}})()"
     )
     t0 = time.time()
+    target_encontrado = False
+    ultimo_visto = None
     while time.time() - t0 < timeout:
         ws_url = descubrir_target(puerto, timeout=1.5)
         if ws_url:
+            if not target_encontrado:
+                target_encontrado = True
+                _log.info(
+                    "quark_cdp.esperar_proyecto_listo: target CDP encontrado tras %.1fs "
+                    "(esperando archivo ~= %r).", time.time() - t0, nombre_esperado)
             try:
                 result = evaluar(ws_url, expr, timeout=3.0)
                 activo = result.get("value")
-                if activo:
-                    if not nombre_esperado or nombre_esperado in str(activo).strip().lower():
-                        return True
-            except Exception:
-                pass
+            except Exception as e:
+                activo = None
+                _log.info("quark_cdp.esperar_proyecto_listo: evaluar() falló (%s).", e)
+            if activo and activo != ultimo_visto:
+                _log.info(
+                    "quark_cdp.esperar_proyecto_listo: activeProject → %r "
+                    "(esperado stem ~= %r).", activo, nombre_esperado)
+                ultimo_visto = activo
+            if activo:
+                activo_stem = Path(str(activo)).stem.strip().lower()
+                if not nombre_esperado_norm or activo_stem == nombre_esperado_norm:
+                    _log.info("quark_cdp.esperar_proyecto_listo: listo tras %.1fs.",
+                              time.time() - t0)
+                    return True
         time.sleep(intervalo)
+    _log.warning(
+        "quark_cdp.esperar_proyecto_listo: timeout tras %.1fs (esperado=%r, "
+        "target_cdp_encontrado=%s, último activeProject visto=%r).",
+        timeout, nombre_esperado, target_encontrado, ultimo_visto)
     return False
 
 
@@ -202,6 +250,8 @@ def ejecutar_script(ruta_js, puerto: int = PUERTO_DEFAULT, timeout: float = 60.0
     nunca lanza (para que el llamador pueda caer de vuelta a pyautogui sin try/except)."""
     ws_url = descubrir_target(puerto)
     if not ws_url:
+        _log.warning("quark_cdp.ejecutar_script: CDP no disponible (puerto %d) para %s.",
+                     puerto, ruta_js)
         return False
     try:
         codigo = Path(ruta_js).read_text(encoding="utf-8")
@@ -210,6 +260,7 @@ def ejecutar_script(ruta_js, puerto: int = PUERTO_DEFAULT, timeout: float = 60.0
         return False
     try:
         evaluar(ws_url, codigo, timeout=timeout)
+        _log.info("quark_cdp.ejecutar_script: %s ejecutado OK por CDP.", Path(ruta_js).name)
         return True
     except Exception as e:
         _log.warning("quark_cdp.ejecutar_script: falló ejecutando %s (%s).", ruta_js, e)
