@@ -22,7 +22,19 @@ import logging
 _log = logging.getLogger(__name__)
 
 _TITLE_PREFIX = "QuarkXPress (R)"
-_CLASS_NAMES = {"QXMainWinClass", "QXMainWindow"}
+# "QXMainWinClass"/"QXMainWindow" son los nombres de clase originalmente supuestos, pero
+# nunca matchean en vivo: la ventana principal real de QuarkXPress 2018 tiene clase
+# "QuarkXPress14" (versionada — confirmado con Win32 GetClassName). Se agrega explícita
+# y se generaliza con _es_clase_quark() para no romper con la próxima versión (15, 16…).
+_CLASS_NAMES = {"QXMainWinClass", "QXMainWindow", "QuarkXPress14"}
+
+
+def _es_clase_quark(nombre_clase: str) -> bool:
+    if nombre_clase in _CLASS_NAMES:
+        return True
+    if nombre_clase.startswith("QuarkXPress") and nombre_clase[len("QuarkXPress"):].isdigit():
+        return True
+    return False
 
 
 class CanceladoError(Exception):
@@ -44,12 +56,74 @@ def lanzar_quark_sin_robar_foco(quark_exe: str, qxp_path):
     ventana de Quark); el modo pyautogui sigue necesitando la ventana visible y en
     foco, así que no debe usar este lanzador.
 
+    LIMITACIÓN CONFIRMADA: si Quark YA está corriendo (instancia única — verificado en
+    vivo: un PID de Quark abierto a las 15:53 seguía siendo el mismo casi 2h después),
+    el proceso que lanza este `Popen` detecta la instancia existente, le reenvía el
+    pedido de abrir el archivo, y esa instancia YA EXISTENTE es la que decide activarse
+    — algo que este `STARTUPINFO` no puede evitar, porque no es nuestro proceso el que
+    crea esa ventana. Para ese caso hace falta la contramedida activa `VigilanteForeground`
+    (más abajo), que corrige después en vez de prevenir en el lanzamiento.
+
     Devuelve el Popen, igual que un `subprocess.Popen` normal."""
     import subprocess
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 7  # SW_SHOWMINNOACTIVE: visible en la barra de tareas, minimizada, sin foco
     return subprocess.Popen([quark_exe, str(qxp_path)], shell=False, startupinfo=si)
+
+
+class VigilanteForeground:
+    """Mientras está activo, si la ventana PRINCIPAL de Quark se convierte en la
+    ventana en primer plano, la minimiza de inmediato (`ShowWindow` + `SW_MINIMIZE`).
+
+    Minimizar una ventana NO requiere derechos de foreground (a diferencia de
+    `SetForegroundWindow`), así que esto funciona aunque nuestro propio proceso no los
+    tenga — es la contramedida real para el caso confirmado en vivo donde Quark ya
+    está corriendo (instancia única) y se autoactiva al recibir un pedido de abrir un
+    archivo, sin que `lanzar_quark_sin_robar_foco` (que solo controla CÓMO arranca un
+    proceso nuevo) tenga ningún efecto sobre esa ventana ya existente.
+
+    Uso: `start()` justo antes de lanzar/pedir la apertura del .qxp, `stop()` una vez
+    terminado el disparo por CDP (envolver en try/finally)."""
+
+    def __init__(self, intervalo: float = 0.25):
+        self.intervalo = intervalo
+        self._thread = None
+        self._detener = None
+
+    def start(self):
+        import threading
+        if self._thread is not None:
+            return
+        self._detener = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._detener is not None:
+            self._detener.set()
+        t = self._thread
+        self._thread = None
+        if t is not None:
+            t.join(timeout=1.0)
+
+    def _loop(self):
+        import ctypes
+        user32 = ctypes.windll.user32
+        while not self._detener.is_set():
+            try:
+                # encontrar_hwnd_quark_principal() busca por CLASE (QXMainWinClass/
+                # QXMainWindow) y no matchea la ventana real observada en vivo (clase
+                # "QuarkXPress14" — versionada, no está en _CLASS_NAMES). Igual que
+                # focus_quark(), hay que caer al match por TÍTULO (encontrar_hwnd_quark)
+                # cuando el de clase falla, si no el vigilante nunca encuentra la ventana.
+                hwnd_quark = encontrar_hwnd_quark_principal() or encontrar_hwnd_quark()
+                if hwnd_quark and user32.GetForegroundWindow() == hwnd_quark:
+                    user32.ShowWindow(hwnd_quark, 6)  # SW_MINIMIZE
+                    _log.info("VigilanteForeground: Quark tomó el foreground → minimizado.")
+            except Exception:
+                pass
+            self._detener.wait(self.intervalo)
 
 # Al duplicar (Ctrl+D), el clon aparece desplazado abajo-derecha unos px. Para "agarrarlo"
 # con el mouse hay que apuntar corrido en ese sentido respecto del centro del original.
@@ -90,7 +164,7 @@ def encontrar_hwnd_quark():
                 return False
         class_buff = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, class_buff, 256)
-        if (class_buff.value or "") in _CLASS_NAMES:
+        if _es_clase_quark(class_buff.value or ""):
             found.append(hwnd)
             return False
         return True
@@ -122,7 +196,7 @@ def encontrar_hwnd_quark_principal():
             return True
         class_buff = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, class_buff, 256)
-        if (class_buff.value or "") in _CLASS_NAMES:
+        if _es_clase_quark(class_buff.value or ""):
             found.append(hwnd)
             return False
         return True
@@ -445,7 +519,7 @@ class QuarkAutomator:
             # Si es la ventana principal (campo custom), no es un control legible.
             class_buff = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd, class_buff, 256)
-            if (class_buff.value or "") in _CLASS_NAMES:
+            if _es_clase_quark(class_buff.value or ""):
                 return None
             length = user32.GetWindowTextLengthW(hwnd)
             buff = ctypes.create_unicode_buffer(length + 1)

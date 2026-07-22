@@ -35,7 +35,7 @@ from pathlib import Path
 from collections import deque
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
-from services.quark_auto import QuarkAutomator, CanceladoError
+from services.quark_auto import QuarkAutomator, CanceladoError, VigilanteForeground
 from services import quark_cdp
 from config.config import Config
 
@@ -171,6 +171,13 @@ class _ExportWorker(QThread):
     def run(self):
         a = self.automator
         n = self.folio
+        # Contramedida (solo modo Script): si Quark ya está corriendo (instancia única)
+        # y se autoactiva al recibir el pedido de abrir el .qxp, minimizarlo de inmediato
+        # — ver services.quark_auto.VigilanteForeground. No se activa en MODO_BOT, que
+        # sí necesita la ventana real en foco.
+        vigilante = VigilanteForeground()
+        if self.modo == MODO_SCRIPT:
+            vigilante.start()
         try:
             self.paso.emit(f"P{n:02d}: abriendo {self.qxp_path.name}…")
             if not a.simular:
@@ -235,6 +242,8 @@ class _ExportWorker(QThread):
         except Exception as e:
             _log.warning("Export worker P%02d falló: %s", n, e)
             self.terminado.emit(n, ERROR)
+        finally:
+            vigilante.stop()
 
     def _exportar_por_bot(self, a, n, nombre) -> bool:
         """Modo 'bot': Ctrl+Alt+P + nombre + Enter, luego espera el PDF en disco."""

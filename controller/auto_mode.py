@@ -28,7 +28,7 @@ from pathlib import Path
 from collections import deque
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
-from services.quark_auto import QuarkAutomator, CanceladoError
+from services.quark_auto import QuarkAutomator, CanceladoError, VigilanteForeground
 from services import quark_cdp
 from services.armado_auto_schema import (
     PLANTILLAS, RECURSOS_MOVIBLES, recurso_activo, ZOOM_ARMADO, normalizar_seccion,
@@ -173,6 +173,13 @@ class _PaginaWorker(QThread):
     def run(self):
         a = self.automator
         n = self.numero
+        # Contramedida: si Quark ya está corriendo (instancia única) y se autoactiva al
+        # recibir el pedido de abrir el .qxp de esta página, minimizarlo de inmediato
+        # (ver services.quark_auto.VigilanteForeground — confirmado en vivo que esto
+        # pasa aunque se lance con STARTUPINFO/SW_SHOWMINNOACTIVE, porque no es nuestro
+        # proceso el que crea esa ventana cuando Quark ya estaba abierto).
+        vigilante = VigilanteForeground()
+        vigilante.start()
         try:
             # Esperar (sin foco, sin clics) a que Quark tenga el proyecto de esta página
             # como activo. Si queda bloqueado por un diálogo nativo (proyecto bloqueado
@@ -226,6 +233,8 @@ class _PaginaWorker(QThread):
         except Exception as e:
             _log.warning("Worker P%02d falló: %s", n, e)
             self.terminado.emit(n, ERROR)
+        finally:
+            vigilante.stop()
 
     # ── helpers de colocación (no llamados hoy: PegarNota v6 mueve recursos por
     # geometría/DOM; se conservan por si hiciera falta un fallback puntual) ──
