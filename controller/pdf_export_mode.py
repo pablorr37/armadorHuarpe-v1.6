@@ -10,11 +10,13 @@ avanza el qxp de 'mandar' a 'a pdf' — este orquestador NO mueve archivos.
 Dos modos de exportación, seleccionables (ver PdfExportOrchestrator.set_modo):
   - MODO_BOT ("bot"): pyautogui puro — Ctrl+Alt+P + nombre + Enter (QuarkAutomator.exportar_pdf).
     Ya probado en vivo por el usuario; es el default.
-  - MODO_SCRIPT ("script"): dispara scripts/ExportarPDF.js (mismo contrato JS-play que
-    PegarNota v6 — click_script_y_play + poll de un flag JSON), que exporta vía la API real
-    de Quark 2018 `app.activeLayout().exportLayoutAsPDF(path, kOutputUI_SuppressAll, "Huarpe")`
-    (100% headless, sin diálogos). Requiere calibrar `export_script` (la fila del script en el
-    palette JS) — ver services/armado_auto_schema.py PASOS_CALIBRACION.
+  - MODO_SCRIPT ("script"): dispara scripts/ExportarPDF.js, que exporta vía la API real de
+    Quark 2018 `app.activeLayout().exportLayoutAsPDF(path, kOutputUI_SuppressAll, "Huarpe")`
+    (100% headless, sin diálogos). El disparo en sí se intenta primero por CDP (sin
+    pyautogui — ver services/quark_cdp.py); si el puerto de depuración de Quark no está
+    disponible, cae al clic calibrado en el palette JS (click_script_y_play, requiere
+    calibrar `export_script`/`play` — ver services/armado_auto_schema.py PASOS_CALIBRACION).
+    En ambos casos se espera el mismo flag JSON (export_pdf_status.json).
 
 Mismo patrón de _PaginaWorker/AutoModeOrchestrator (kill-switch Esc×5, QThread por página,
 reintentos de foco), simplificado porque no hay pasos de asignar/pegar/colocar recursos.
@@ -32,8 +34,12 @@ from collections import deque
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 from services.quark_auto import QuarkAutomator, CanceladoError
+from services import quark_cdp
+from config.config import Config
 
 _log = logging.getLogger(__name__)
+
+EXPORTAR_PDF_JS = Config.SCRIPTS_DIR / "ExportarPDF.js"
 
 # Estados de fin de página
 OK = "ok"
@@ -226,16 +232,21 @@ class _ExportWorker(QThread):
         return False
 
     def _exportar_por_script(self, a, n, nombre) -> bool:
-        """Modo 'script': dispara ExportarPDF.js (mismo contrato JS-play que PegarNota v6)
-        y espera su flag de status."""
-        if not (self.coord_export_script and self.coord_play):
-            _log.warning("P%02d: faltan coords calibradas de 'export_script'/'play'.", n)
-            return False
+        """Modo 'script': dispara ExportarPDF.js (primero vía CDP, sin pyautogui; si el
+        puerto de depuración no está disponible, cae al clic calibrado en el palette —
+        mismo contrato JS-play que PegarNota v6) y espera su flag de status."""
         output_path = str(self.pdf_root / f"{nombre}.pdf")
         marcar_export_pendiente(n, output_path, PDF_STYLE)
         self.paso.emit(f"P{n:02d}: disparando ExportarPDF.js ({nombre})…")
-        if not a.click_script_y_play(self.coord_export_script, self.coord_play, espera=3.0):
-            return False
+        if quark_cdp.ejecutar_script(EXPORTAR_PDF_JS, timeout=60.0):
+            self.paso.emit(f"P{n:02d}: export disparado vía CDP (sin pyautogui).")
+        else:
+            if not (self.coord_export_script and self.coord_play):
+                _log.warning("P%02d: CDP no disponible y faltan coords 'export_script'/'play'.", n)
+                return False
+            self.paso.emit(f"P{n:02d}: CDP no disponible, disparando por clic en el palette…")
+            if not a.click_script_y_play(self.coord_export_script, self.coord_play, espera=3.0):
+                return False
         self.paso.emit(f"P{n:02d}: esperando el resultado del script…")
         t0 = time.time()
         while time.time() - t0 < TIMEOUT_EXPORT_STATUS:
@@ -421,9 +432,10 @@ class PdfExportOrchestrator(QObject):
                 coord_export_script, coord_play = self._fn_coords_export()
             except Exception as e:
                 _log.warning("coords_export falló: %s", e)
-            if not (coord_export_script and coord_play):
+            if not (coord_export_script and coord_play) and not quark_cdp.disponible():
                 self.estado.emit(
-                    "Exportar PDF (modo Script): falta calibrar 'export_script' o 'play'.")
+                    "Exportar PDF (modo Script): falta calibrar 'export_script'/'play' "
+                    "(o iniciar QuarkXPress para disparar por CDP).")
                 return
 
         self._activa = folio

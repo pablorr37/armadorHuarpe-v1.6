@@ -6,15 +6,16 @@ procesa de a una, con prioridad del dorso editorial (2,3,6,7,10,11,14,15) y lueg
 orden numérico. Por página:
   asigna → pega (abre Quark) → [b] si el proyecto está bloqueado ([315]) aborta y
   reintenta en el próximo poll → [a] cierra cartel de fuentes → enfoca Quark →
-  [c] corre el script dedicado (clic ítem + Play) → [d] firma → [e] epígrafe →
-  [f] clona+arrastra textual/dato/número/QR (×3 plantillas) → [g] foto 3 col ancha
-  (×3) → guarda → cierra.
+  [c] dispara PegarNota v6.js (vía CDP, o clic ítem+Play si el CDP no está
+  disponible — ver `_disparar_pegado`) → el JS hace TODO: pega, geometría de foto y
+  recursos (moverGrupo/PegarNota v6), guarda y cierra.
 
 Qué pasos corren se decide con la composición de la página (`fn_comp`), y dónde
-están/van los recursos con la calibración por áreas (`fn_calibracion`).
+están/van los recursos con la calibración por áreas (`fn_calibracion`), que el JS
+lee de `data_pagina.json`/`runtime_config.json`.
 
 La preparación en disco (asignar + pegar + abrir Quark) corre en el hilo GUI
-(rápida, sin bloqueo); la parte lenta con pyautogui corre en un QThread.
+(rápida, sin bloqueo); el disparo y la espera del resultado corren en un QThread.
 """
 from __future__ import annotations
 
@@ -28,11 +29,14 @@ from collections import deque
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 from services.quark_auto import QuarkAutomator, CanceladoError
+from services import quark_cdp
 from services.armado_auto_schema import (
     PLANTILLAS, RECURSOS_MOVIBLES, recurso_activo, ZOOM_ARMADO, normalizar_seccion,
     foto3_variante, textual_src_key,
 )
-from config.config import config_global
+from config.config import config_global, Config
+
+PEGAR_NOTA_JS = Config.SCRIPTS_DIR / "PegarNota v6.js"
 
 _log = logging.getLogger(__name__)
 
@@ -188,14 +192,16 @@ class _PaginaWorker(QThread):
             a.esperar_y_cerrar_dialogo_fuentes(timeout=4.0)
             a.esperar(0.4)
 
-            # c) ÚNICO paso pyautogui: clic al script (PegarNota v6) + Play en el palette.
-            #    A partir de acá, el JS hace TODO: pega, geometría (foto/recursos/clones/
-            #    epígrafes) y, en modo auto, GUARDA y CIERRA el proyecto; luego escribe el
-            #    flag armado_status.json. Python solo espera ese flag y minimiza.
+            # c) Disparo del script (PegarNota v6). A partir de acá, el JS hace TODO: pega,
+            #    geometría (foto/recursos/clones/epígrafes) y, en modo auto, GUARDA y CIERRA
+            #    el proyecto; luego escribe el flag armado_status.json. Python solo espera
+            #    ese flag y minimiza. Primero se intenta vía CDP (sin pyautogui, ver
+            #    services/quark_cdp.py); si el puerto de depuración no está disponible, cae
+            #    al clic calibrado en el palette (compatibilidad con versiones/instalaciones
+            #    donde el puerto no esté habilitado).
             _limpiar_armado_status()  # descartar un flag viejo
-            self.paso.emit(f"P{n:02d}: disparando el pegado (JS hace todo)…")
-            if not a.click_script_y_play(self.coord_script, self.coord_play,
-                                         espera=self.espera_pegado):
+            self.paso.emit(f"P{n:02d}: disparando el pegado…")
+            if not self._disparar_pegado(a, n):
                 self.terminado.emit(n, ERROR)
                 return
 
@@ -224,6 +230,17 @@ class _PaginaWorker(QThread):
         except Exception as e:
             _log.warning("Worker P%02d falló: %s", n, e)
             self.terminado.emit(n, ERROR)
+
+    def _disparar_pegado(self, a, n: int) -> bool:
+        """Ejecuta PegarNota v6.js: primero vía CDP (services/quark_cdp — sin pyautogui,
+        sin coordenadas, sin necesidad de que Quark esté en primer plano); si el puerto de
+        depuración de Quark no responde, cae al clic calibrado en el palette JS."""
+        if quark_cdp.ejecutar_script(PEGAR_NOTA_JS, timeout=self.espera_pegado + 60.0):
+            self.paso.emit(f"P{n:02d}: pegado disparado vía CDP (sin pyautogui).")
+            return True
+        self.paso.emit(f"P{n:02d}: CDP no disponible, disparando por clic en el palette…")
+        return a.click_script_y_play(self.coord_script, self.coord_play,
+                                     espera=self.espera_pegado)
 
     # ── helpers de colocación ─────────────────────────────────
     def _reemplazo_por_plantilla(self, a, clave_src: str, base_dst: str):
@@ -466,8 +483,10 @@ class AutoModeOrchestrator(QObject):
                 return
 
     def _procesar(self, numero: int):
-        if not self.calibrado():
-            self.estado.emit("Armado automático: falta calibrar el botón Play.")
+        if not self.calibrado() and not quark_cdp.disponible():
+            self.estado.emit(
+                "Armado automático: falta calibrar el botón Play (o iniciar QuarkXPress "
+                "para disparar el pegado por CDP).")
             return
 
         # Composición (para gating y sección). Se obtiene ANTES de asignar/pegar para poder
