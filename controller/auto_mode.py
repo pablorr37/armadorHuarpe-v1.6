@@ -28,7 +28,7 @@ from pathlib import Path
 from collections import deque
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
-from services.quark_auto import QuarkAutomator, CanceladoError, VigilanteForeground
+from services.quark_auto import QuarkAutomator, CanceladoError
 from services import quark_cdp
 from services.armado_auto_schema import (
     PLANTILLAS, RECURSOS_MOVIBLES, recurso_activo, ZOOM_ARMADO, normalizar_seccion,
@@ -173,13 +173,6 @@ class _PaginaWorker(QThread):
     def run(self):
         a = self.automator
         n = self.numero
-        # Contramedida: si Quark ya está corriendo (instancia única) y se autoactiva al
-        # recibir el pedido de abrir el .qxp de esta página, minimizarlo de inmediato
-        # (ver services.quark_auto.VigilanteForeground — confirmado en vivo que esto
-        # pasa aunque se lance con STARTUPINFO/SW_SHOWMINNOACTIVE, porque no es nuestro
-        # proceso el que crea esa ventana cuando Quark ya estaba abierto).
-        vigilante = VigilanteForeground()
-        vigilante.start()
         try:
             # Esperar (sin foco, sin clics) a que Quark tenga el proyecto de esta página
             # como activo. Si queda bloqueado por un diálogo nativo (proyecto bloqueado
@@ -199,9 +192,20 @@ class _PaginaWorker(QThread):
                 return
             _log.info("P%02d: proyecto activo confirmado por CDP.", n)
 
-            # Disparo del script (PegarNota v6) vía CDP — sin clics, sin foco. A partir de
-            # acá el JS hace TODO: pega, geometría (foto/recursos/clones/epígrafes) y, en
-            # modo auto, GUARDA y CIERRA el proyecto; luego escribe armado_status.json.
+            # IMPORTANTE: mostrar (no minimizar) la ventana antes de disparar el script.
+            # PegarNota v6 mueve recursos desde el pasteboard a la página (plantilla 1)
+            # con una compensación (COMP_X/COMP_Y) que solo funciona si Quark está
+            # renderizando de verdad — confirmado en vivo (geo_diag.txt): con la ventana
+            # minimizada, los recursos quedan en la coordenada cruda del pasteboard, fuera
+            # de la maqueta. "Mostrar" no es "activar": SW_SHOWNOACTIVATE no le roba el
+            # foco a quien esté usando la PC (ver services.quark_auto.mostrar_quark_sin_activar).
+            from services.quark_auto import mostrar_quark_sin_activar
+            mostrar_quark_sin_activar()
+
+            # Disparo del script (PegarNota v6) vía CDP — sin clics, sin foco (pero con la
+            # ventana visible, por lo de arriba). A partir de acá el JS hace TODO: pega,
+            # geometría (foto/recursos/clones/epígrafes) y, en modo auto, GUARDA y CIERRA
+            # el proyecto; luego escribe armado_status.json.
             _limpiar_armado_status()  # descartar un flag viejo
             self.paso.emit(f"P{n:02d}: disparando el pegado (CDP)…")
             if not quark_cdp.ejecutar_script(PEGAR_NOTA_JS, timeout=self.espera_pegado + 60.0):
@@ -233,8 +237,6 @@ class _PaginaWorker(QThread):
         except Exception as e:
             _log.warning("Worker P%02d falló: %s", n, e)
             self.terminado.emit(n, ERROR)
-        finally:
-            vigilante.stop()
 
     # ── helpers de colocación (no llamados hoy: PegarNota v6 mueve recursos por
     # geometría/DOM; se conservan por si hiciera falta un fallback puntual) ──

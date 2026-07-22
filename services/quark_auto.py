@@ -72,6 +72,38 @@ def lanzar_quark_sin_robar_foco(quark_exe: str, qxp_path):
     return subprocess.Popen([quark_exe, str(qxp_path)], shell=False, startupinfo=si)
 
 
+def mostrar_quark_sin_activar() -> bool:
+    """Restaura/muestra la ventana de Quark (si estaba minimizada) SIN activarla — no le
+    quita el foco a quien esté usando la PC.
+
+    Confirmado en vivo (geo_diag.txt de una corrida real): con la ventana minimizada,
+    Quark deja `getBoundingClientRect()` en cero (no está renderizando), y PegarNota
+    v6.js necesita que SÍ esté renderizando para que su compensación de pasteboard→
+    página (COMP_X/COMP_Y, ver ese script) funcione — sin eso, los recursos movidos
+    desde el pasteboard (plantilla 1) quedan en la coordenada cruda del pasteboard, muy
+    fuera de la maqueta, en vez de la posición real de la página. Las plantillas 2/3 no
+    pasan por el pasteboard y no sufren este problema.
+
+    Por eso, a diferencia de `VigilanteForeground` (pensado para minimizar Quark cuando
+    NO hace falta que renderice, p. ej. durante el export), el armado necesita mostrar
+    la ventana ANTES de disparar el script y recién minimizarla al terminar — igual que
+    hacía el flujo viejo con pyautogui (maximizada+foco durante todo el proceso), pero
+    sin robar el foco: `SW_SHOWNOACTIVATE` la deja visible sin activarla.
+
+    Devuelve True si encontró la ventana (no garantiza que Windows la haya restaurado;
+    `ShowWindow` no da una señal de éxito útil para este caso)."""
+    try:
+        import ctypes
+        hwnd = encontrar_hwnd_quark_principal() or encontrar_hwnd_quark()
+        if not hwnd:
+            return False
+        ctypes.windll.user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+        return True
+    except Exception as e:
+        _log.warning("mostrar_quark_sin_activar falló: %s", e)
+        return False
+
+
 class VigilanteForeground:
     """Mientras está activo, si la ventana PRINCIPAL de Quark se convierte en la
     ventana en primer plano, la minimiza de inmediato (`ShowWindow` + `SW_MINIMIZE`).
