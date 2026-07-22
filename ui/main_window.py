@@ -1747,7 +1747,7 @@ class MainWindow(QMainWindow):
         try:
             from controller.auto_mode import AutoModeOrchestrator
             self.auto_orq = AutoModeOrchestrator(
-                self._auto_asignar, self._auto_pegar_y_abrir, self._auto_coords,
+                self._auto_asignar, self._auto_pegar_y_abrir, self._auto_nombre_qxp,
                 fn_comp=self.controller.composicion_pagina,
                 fn_calibracion=self._auto_calibracion,
                 fn_finalizado_ok=self._auto_finalizado_ok,
@@ -1776,7 +1776,6 @@ class MainWindow(QMainWindow):
                 self._pdf_listar_mandar, self._pdf_quark_exe, self._pdf_root,
                 fn_confirmar_inicio=self._pdf_confirmar_inicio,
                 fn_pre_export=self._pdf_pre_export,
-                fn_coords_export=self._pdf_coords_export,
                 modo=config_global.pdf_export_modo,
                 simular=config_global.auto_mode_simular, parent=self)
             self.pdf_orq.log.connect(lambda m: self.statusBar().showMessage(m, 4000))
@@ -5657,8 +5656,8 @@ class MainWindow(QMainWindow):
         if activo and not self.auto_orq.calibrado():
             QMessageBox.information(
                 self, "Armado automático",
-                "Antes de usar el Armado automático, calibrá al menos el botón Play del "
-                "palette JavaScript con Configuración → Armado automático → Calibrar.")
+                "QuarkXPress 2018 no está corriendo (o no responde por el canal de "
+                "automatización). Abrilo antes de activar el Armado automático.")
         self.auto_orq.set_enabled(activo)
 
     def _set_perfil_colores(self, clave: str):
@@ -5718,10 +5717,6 @@ class MainWindow(QMainWindow):
     def _pdf_root(self):
         """Raíz de Imprenta temporal (donde Quark deja el PDF recién exportado)."""
         return getattr(self.controller.rutas, "pdf_root", None)
-
-    def _pdf_coords_export(self):
-        """Coords calibradas del ítem 'ExportarPDF.js' en el palette JS (modo Script)."""
-        return (config_global.auto_coord("export_script"), config_global.auto_coord("play"))
 
     def _set_pdf_export_modo(self, valor: str):
         """Bot (pyautogui) vs Script (ExportarPDF.js) — persiste y aplica al orquestador."""
@@ -5858,8 +5853,15 @@ class MainWindow(QMainWindow):
 
         lanzar_calibrador(parent=self, on_finish=_fin)
 
-    def _auto_coords(self):
-        return (config_global.auto_coord("script"), config_global.auto_coord("play"))
+    def _auto_nombre_qxp(self, numero: int) -> str:
+        """Nombre/stem del .qxp de la página, para que el worker CDP pueda esperar (sin
+        foco) a que Quark lo tenga como proyecto activo — ver quark_cdp.esperar_proyecto_listo."""
+        try:
+            qxp = self.controller.file_service.mejor_qxp_para_pegar(numero)
+            return qxp.stem if qxp else ""
+        except Exception as e:
+            _log.warning("_auto_nombre_qxp P%02d falló: %s", numero, e)
+            return ""
 
     def _auto_calibracion(self, seccion: str = None, aviso: str = None) -> dict:
         """Dict {clave -> punto (x,y)} para clics/arrastres del Armado automático.

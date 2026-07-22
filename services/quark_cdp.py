@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -126,6 +127,45 @@ def evaluar(ws_url: str, expression: str, timeout: float = 60.0) -> dict:
     if result.get("exceptionDetails"):
         raise CDPError(f"Excepción JS: {result['exceptionDetails']}")
     return result.get("result", {})
+
+
+def esperar_proyecto_listo(nombre_esperado: str, puerto: int = PUERTO_DEFAULT,
+                            timeout: float = 40.0, intervalo: float = 0.5) -> bool:
+    """Espera a que el proyecto ACTIVO de QuarkXPress sea `nombre_esperado` (comparación
+    por substring, case-insensitive, contra `app.activeProject().name`), consultando por
+    CDP. No toca foco, mouse ni teclado: sirve de reemplazo de `focus_quark()` como señal
+    de "Quark ya abrió el archivo y está listo" sin molestar a otro operador que esté
+    usando la PC en ese momento.
+
+    Cubre también, de forma indirecta, los casos que antes se manejaban clickeando
+    diálogos nativos (proyecto bloqueado [315], fuentes faltantes): si uno de esos
+    carteles queda abierto, `app.activeProject()` nunca pasa a ser el proyecto esperado
+    y esta función simplemente agota el timeout y devuelve False — el llamador lo trata
+    como "Quark no respondió" (mismo camino que un fallo de apertura) en vez de intentar
+    cerrar el cartel. Si eso pasa, el cartel queda en pantalla hasta que un humano lo
+    note: es el costo aceptado de no tocar la sesión de otro operador.
+
+    Devuelve True si el proyecto quedó activo dentro del timeout; False en cualquier
+    otro caso (Quark no abrió, CDP no disponible, o quedó bloqueado por un diálogo)."""
+    nombre_esperado = (nombre_esperado or "").strip().lower()
+    expr = (
+        "(function(){try{var p=app.activeProject();"
+        "return p ? String(p.name) : null;}catch(e){return null;}})()"
+    )
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        ws_url = descubrir_target(puerto, timeout=1.5)
+        if ws_url:
+            try:
+                result = evaluar(ws_url, expr, timeout=3.0)
+                activo = result.get("value")
+                if activo:
+                    if not nombre_esperado or nombre_esperado in str(activo).strip().lower():
+                        return True
+            except Exception:
+                pass
+        time.sleep(intervalo)
+    return False
 
 
 def info_app(puerto: int = PUERTO_DEFAULT, timeout: float = 5.0) -> Optional[dict]:

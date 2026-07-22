@@ -152,18 +152,19 @@ def orden_prioridad(numeros) -> list:
 
 
 class _PaginaWorker(QThread):
-    """Corre la secuencia pyautogui de una página (Quark ya abierto con el qxp)."""
+    """Corre la secuencia de una página: 100% CDP, sin pyautogui y sin robarle el foco a
+    quien esté usando la PC (ver services/quark_cdp.py). Quark puede quedar minimizado o
+    detrás de otra ventana durante todo el proceso."""
     terminado = pyqtSignal(int, str)    # (numero, estado: OK|ERROR|REINTENTAR)
     paso = pyqtSignal(str)
 
-    def __init__(self, numero, automator: QuarkAutomator, coord_script, coord_play,
+    def __init__(self, numero, automator: QuarkAutomator, nombre_qxp: str,
                  comp: dict, calib: dict, espera_apertura: float, espera_pegado: float,
                  parent=None):
         super().__init__(parent)
         self.numero = int(numero)
         self.automator = automator
-        self.coord_script = coord_script
-        self.coord_play = coord_play
+        self.nombre_qxp = nombre_qxp or ""
         self.comp = comp or {}
         self.calib = calib or {}
         self.espera_apertura = espera_apertura
@@ -173,45 +174,33 @@ class _PaginaWorker(QThread):
         a = self.automator
         n = self.numero
         try:
-            # ANTES de cualquier clic/Enter/movimiento: confirmar que Quark está al frente.
-            # Espera a que abra (PC lenta / Quark cerrado); si no llega → REINTENTAR_FOCO.
-            self.paso.emit(f"P{n:02d}: esperando a que Quark esté en primer plano…")
-            if not a.focus_quark(timeout=self.espera_apertura + 20.0):
-                self.paso.emit(f"P{n:02d}: Quark no quedó al frente → reintento en el próximo poll.")
+            # Esperar (sin foco, sin clics) a que Quark tenga el proyecto de esta página
+            # como activo. Si queda bloqueado por un diálogo nativo (proyecto bloqueado
+            # [315], fuentes faltantes) o Quark no abre a tiempo, esto simplemente agota
+            # el timeout — no se intenta cerrar el cartel por pyautogui (ver docstring de
+            # quark_cdp.esperar_proyecto_listo).
+            self.paso.emit(f"P{n:02d}: esperando que Quark abra el proyecto…")
+            if not quark_cdp.esperar_proyecto_listo(self.nombre_qxp,
+                                                     timeout=self.espera_apertura + 20.0):
+                self.paso.emit(f"P{n:02d}: Quark no respondió → reintento en el próximo poll.")
                 self.terminado.emit(n, REINTENTAR_FOCO)
                 return
 
-            # b) Proyecto bloqueado ([315], documento abierto en otra estación).
-            if a.esperar_y_cerrar_dialogo_bloqueado(timeout=2.0):
-                self.paso.emit(f"P{n:02d}: bloqueado [315] → reintento en el próximo poll.")
-                a.cerrar()  # cerrar el qxp que abrimos, para no dejarlo colgado
-                self.terminado.emit(n, REINTENTAR)
-                return
-
-            # a) Cartel de fuentes no instaladas → 'Continuar' (opcional).
-            a.esperar_y_cerrar_dialogo_fuentes(timeout=4.0)
-            a.esperar(0.4)
-
-            # c) Disparo del script (PegarNota v6). A partir de acá, el JS hace TODO: pega,
-            #    geometría (foto/recursos/clones/epígrafes) y, en modo auto, GUARDA y CIERRA
-            #    el proyecto; luego escribe el flag armado_status.json. Python solo espera
-            #    ese flag y minimiza. Primero se intenta vía CDP (sin pyautogui, ver
-            #    services/quark_cdp.py); si el puerto de depuración no está disponible, cae
-            #    al clic calibrado en el palette (compatibilidad con versiones/instalaciones
-            #    donde el puerto no esté habilitado).
+            # Disparo del script (PegarNota v6) vía CDP — sin clics, sin foco. A partir de
+            # acá el JS hace TODO: pega, geometría (foto/recursos/clones/epígrafes) y, en
+            # modo auto, GUARDA y CIERRA el proyecto; luego escribe armado_status.json.
             _limpiar_armado_status()  # descartar un flag viejo
-            self.paso.emit(f"P{n:02d}: disparando el pegado…")
-            if not self._disparar_pegado(a, n):
+            self.paso.emit(f"P{n:02d}: disparando el pegado (CDP)…")
+            if not quark_cdp.ejecutar_script(PEGAR_NOTA_JS, timeout=self.espera_pegado + 60.0):
+                _log.warning("P%02d: no se pudo disparar PegarNota v6.js por CDP.", n)
                 self.terminado.emit(n, ERROR)
                 return
 
-            # Esperar a que el JS termine (guardó + cerró + escribió el flag). Mientras tanto,
-            # limpiar carteles de fuentes que pudieran bloquear el guardado.
+            # Esperar a que el JS termine (guardó + cerró + escribió el flag).
             self.paso.emit(f"P{n:02d}: esperando que el JS guarde y cierre…")
             _t0 = time.time()
             _ok = False
             while time.time() - _t0 < 90.0:
-                a.esperar_y_cerrar_dialogo_fuentes(timeout=0.5)
                 if _leer_armado_status(n):
                     _ok = True
                     break
@@ -231,18 +220,8 @@ class _PaginaWorker(QThread):
             _log.warning("Worker P%02d falló: %s", n, e)
             self.terminado.emit(n, ERROR)
 
-    def _disparar_pegado(self, a, n: int) -> bool:
-        """Ejecuta PegarNota v6.js: primero vía CDP (services/quark_cdp — sin pyautogui,
-        sin coordenadas, sin necesidad de que Quark esté en primer plano); si el puerto de
-        depuración de Quark no responde, cae al clic calibrado en el palette JS."""
-        if quark_cdp.ejecutar_script(PEGAR_NOTA_JS, timeout=self.espera_pegado + 60.0):
-            self.paso.emit(f"P{n:02d}: pegado disparado vía CDP (sin pyautogui).")
-            return True
-        self.paso.emit(f"P{n:02d}: CDP no disponible, disparando por clic en el palette…")
-        return a.click_script_y_play(self.coord_script, self.coord_play,
-                                     espera=self.espera_pegado)
-
-    # ── helpers de colocación ─────────────────────────────────
+    # ── helpers de colocación (no llamados hoy: PegarNota v6 mueve recursos por
+    # geometría/DOM; se conservan por si hiciera falta un fallback puntual) ──
     def _reemplazo_por_plantilla(self, a, clave_src: str, base_dst: str):
         """Copia el texto del box de origen y lo reemplaza (Ctrl+Alt+U) en cada plantilla."""
         src = self.calib.get(clave_src)
@@ -350,13 +329,15 @@ class AutoModeOrchestrator(QObject):
     ESPERA_APERTURA = 6.0          # s tras abrir Quark antes de enfocar
     ESPERA_PEGADO = 8.0            # s tras Play antes de continuar
 
-    def __init__(self, fn_asignar, fn_pegar_y_abrir, fn_coords,
+    def __init__(self, fn_asignar, fn_pegar_y_abrir, fn_nombre_qxp,
                  fn_comp=None, fn_calibracion=None, fn_finalizado_ok=None,
                  fn_confirmar_inicio=None, simular=False, parent=None):
         """
         fn_asignar(numero) -> bool
         fn_pegar_y_abrir(numero) -> bool   (pegar_en_quark + abrir el qxp)
-        fn_coords() -> (coord_script, coord_play)   (calibración de puntos del palette)
+        fn_nombre_qxp(numero) -> str       (nombre/stem del .qxp que se abrió, para que el
+                                            worker pueda esperar por CDP a que quede activo
+                                            sin necesitar foco — ver quark_cdp.esperar_proyecto_listo)
         fn_comp(numero) -> dict            (composicion_pagina: gating d–g)
         fn_calibracion() -> dict           (clave -> punto (x,y) para clics/arrastres)
         fn_finalizado_ok(numero) -> None   (post-OK en hilo GUI: mover a Base + traer Armador)
@@ -366,7 +347,7 @@ class AutoModeOrchestrator(QObject):
         super().__init__(parent)
         self._fn_asignar = fn_asignar
         self._fn_pegar = fn_pegar_y_abrir
-        self._fn_coords = fn_coords
+        self._fn_nombre_qxp = fn_nombre_qxp or (lambda _n: "")
         self._fn_comp = fn_comp or (lambda _n: {})
         self._fn_calibracion = fn_calibracion or (lambda _s=None, _a=None: {})
         self._fn_finalizado_ok = fn_finalizado_ok or (lambda _n: None)
@@ -451,9 +432,10 @@ class AutoModeOrchestrator(QObject):
         return bool(getattr(self._automator, "simular", False))
 
     def calibrado(self) -> bool:
-        """True si al menos el botón Play está calibrado."""
-        _script, play = self._fn_coords()
-        return bool(play)
+        """True si QuarkXPress está corriendo y responde por CDP (services/quark_cdp) —
+        condición para poder disparar el pegado sin pyautogui. El nombre se conserva para
+        no romper el llamador en ui/main_window.py."""
+        return quark_cdp.disponible()
 
     def reset_pagina(self, numero: int):
         """Olvida el resultado previo de `numero` para que pueda volver a armarse (p. ej. el
@@ -483,10 +465,10 @@ class AutoModeOrchestrator(QObject):
                 return
 
     def _procesar(self, numero: int):
-        if not self.calibrado() and not quark_cdp.disponible():
+        if not self.calibrado():
             self.estado.emit(
-                "Armado automático: falta calibrar el botón Play (o iniciar QuarkXPress "
-                "para disparar el pegado por CDP).")
+                "Armado automático: QuarkXPress no está corriendo (o el canal CDP no "
+                "responde) — iniciá QuarkXPress 2018 antes de activar el armado automático.")
             return
 
         # Composición (para gating y sección). Se obtiene ANTES de asignar/pegar para poder
@@ -535,7 +517,11 @@ class AutoModeOrchestrator(QObject):
             self._finalizar(numero, ERROR)
             return
 
-        coord_script, coord_play = self._fn_coords()
+        try:
+            nombre_qxp = self._fn_nombre_qxp(numero) or ""
+        except Exception as e:
+            _log.warning("nombre_qxp P%02d falló: %s", numero, e)
+            nombre_qxp = ""
         try:
             # La maqueta depende de la sección y del tipo de aviso (comp['aviso_tipo']).
             calib = self._fn_calibracion(seccion, comp.get("aviso_tipo")) or {}
@@ -547,7 +533,7 @@ class AutoModeOrchestrator(QObject):
         self._cancel_event.clear()
         self._iniciar_watcher()
 
-        self._worker = _PaginaWorker(numero, self._automator, coord_script, coord_play,
+        self._worker = _PaginaWorker(numero, self._automator, nombre_qxp,
                                      comp, calib, self.ESPERA_APERTURA, self.ESPERA_PEGADO,
                                      parent=self)
         self._worker.paso.connect(self.log.emit)

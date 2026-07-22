@@ -8,15 +8,17 @@ Quark, exporta a PDF a la raíz de Imprenta temporal, y lo deja: el poll
 avanza el qxp de 'mandar' a 'a pdf' — este orquestador NO mueve archivos.
 
 Dos modos de exportación, seleccionables (ver PdfExportOrchestrator.set_modo):
-  - MODO_BOT ("bot"): pyautogui puro — Ctrl+Alt+P + nombre + Enter (QuarkAutomator.exportar_pdf).
-    Ya probado en vivo por el usuario; es el default.
-  - MODO_SCRIPT ("script"): dispara scripts/ExportarPDF.js, que exporta vía la API real de
-    Quark 2018 `app.activeLayout().exportLayoutAsPDF(path, kOutputUI_SuppressAll, "Huarpe")`
-    (100% headless, sin diálogos). El disparo en sí se intenta primero por CDP (sin
-    pyautogui — ver services/quark_cdp.py); si el puerto de depuración de Quark no está
-    disponible, cae al clic calibrado en el palette JS (click_script_y_play, requiere
-    calibrar `export_script`/`play` — ver services/armado_auto_schema.py PASOS_CALIBRACION).
-    En ambos casos se espera el mismo flag JSON (export_pdf_status.json).
+  - MODO_BOT ("bot"): pyautogui puro — foco + Ctrl+Alt+P + nombre + Enter
+    (QuarkAutomator.exportar_pdf). Ya probado en vivo por el usuario; es el default.
+  - MODO_SCRIPT ("script"): 100% CDP (services/quark_cdp), sin pyautogui y sin robarle el
+    foco a quien esté usando la PC. Espera (por CDP, sin clics) a que el proyecto quede
+    activo, dispara scripts/ExportarPDF.js — que exporta vía la API real de Quark 2018
+    `app.activeLayout().exportLayoutAsPDF(path, kOutputUI_SuppressAll, "Huarpe")` (100%
+    headless, sin diálogos) y además GUARDA y CIERRA el proyecto por su cuenta — y espera
+    el flag export_pdf_status.json. Si Quark no responde por CDP (no está corriendo, o
+    quedó bloqueado por un diálogo nativo tipo fuentes faltantes/[315]), la página se
+    trata como fallo de apertura y se reintenta en el próximo poll: no hay fallback a
+    pyautogui ni se intenta cerrar el diálogo por clic.
 
 Mismo patrón de _PaginaWorker/AutoModeOrchestrator (kill-switch Esc×5, QThread por página,
 reintentos de foco), simplificado porque no hay pasos de asignar/pegar/colocar recursos.
@@ -147,14 +149,17 @@ class _EscWatcherPdf(QThread):
 
 
 class _ExportWorker(QThread):
-    """Exporta UN qxp a PDF: abrir → enfocar → [Ctrl+Alt+P + nombre + Enter | disparar
-    ExportarPDF.js] → esperar el PDF/status → cerrar el documento → minimizar Quark."""
+    """Exporta UN qxp a PDF.
+
+    MODO_SCRIPT: 100% CDP (services/quark_cdp) — sin pyautogui, sin foco, sin tocar el
+    mouse/teclado. ExportarPDF.js exporta, guarda y cierra el proyecto por su cuenta.
+
+    MODO_BOT: pyautogui puro (foco + Ctrl+Alt+P + nombre + Enter), sin cambios."""
     terminado = pyqtSignal(int, str)    # (folio, estado)
     paso = pyqtSignal(str)
 
     def __init__(self, folio: int, qxp_path: Path, quark_exe: str, automator: QuarkAutomator,
-                 pdf_root: Path, modo: str = MODO_BOT, coord_export_script=None,
-                 coord_play=None, parent=None):
+                 pdf_root: Path, modo: str = MODO_BOT, parent=None):
         super().__init__(parent)
         self.folio = int(folio)
         self.qxp_path = Path(qxp_path)
@@ -162,8 +167,6 @@ class _ExportWorker(QThread):
         self.automator = automator
         self.pdf_root = Path(pdf_root)
         self.modo = modo
-        self.coord_export_script = coord_export_script
-        self.coord_play = coord_play
 
     def run(self):
         a = self.automator
@@ -178,6 +181,22 @@ class _ExportWorker(QThread):
                     self.terminado.emit(n, ERROR)
                     return
 
+            nombre = f"{n:02d}"
+
+            if self.modo == MODO_SCRIPT:
+                # Camino silencioso: nunca toca foco/mouse/teclado. ExportarPDF.js exporta,
+                # guarda y cierra el proyecto; acá solo falta minimizar (Win32, no pyautogui).
+                if not self._exportar_por_script(a, n, nombre):
+                    self.terminado.emit(n, ERROR)
+                    return
+                try:
+                    a.minimizar_quark()
+                except Exception as e:
+                    _log.warning("Export P%02d: error al minimizar: %s", n, e)
+                self.terminado.emit(n, OK)
+                return
+
+            # MODO_BOT: requiere foco real de la ventana.
             if not a.focus_quark(timeout=ESPERA_APERTURA + 20.0):
                 self.paso.emit(f"P{n:02d}: Quark no quedó al frente → reintento.")
                 self.terminado.emit(n, REINTENTAR_FOCO)
@@ -186,12 +205,7 @@ class _ExportWorker(QThread):
             a.esperar_y_cerrar_dialogo_fuentes(timeout=4.0)
             a.esperar(0.4)
 
-            nombre = f"{n:02d}"
-            if self.modo == MODO_SCRIPT:
-                ok = self._exportar_por_script(a, n, nombre)
-            else:
-                ok = self._exportar_por_bot(a, n, nombre)
-            if not ok:
+            if not self._exportar_por_bot(a, n, nombre):
                 self.terminado.emit(n, ERROR)
                 return
 
@@ -232,25 +246,26 @@ class _ExportWorker(QThread):
         return False
 
     def _exportar_por_script(self, a, n, nombre) -> bool:
-        """Modo 'script': dispara ExportarPDF.js (primero vía CDP, sin pyautogui; si el
-        puerto de depuración no está disponible, cae al clic calibrado en el palette —
-        mismo contrato JS-play que PegarNota v6) y espera su flag de status."""
+        """Modo 'script', 100% CDP: espera (sin foco) a que Quark tenga el proyecto activo,
+        dispara ExportarPDF.js (exporta + guarda + cierra el proyecto por su cuenta) y
+        espera su flag de status. Nunca cae a pyautogui — si CDP no responde, la página
+        se trata como fallo de apertura y se reintenta en el próximo poll."""
+        self.paso.emit(f"P{n:02d}: esperando que Quark abra el proyecto…")
+        if not quark_cdp.esperar_proyecto_listo(self.qxp_path.stem,
+                                                 timeout=ESPERA_APERTURA + 20.0):
+            _log.warning("P%02d: Quark no respondió por CDP (proyecto no quedó activo).", n)
+            return False
+
         output_path = str(self.pdf_root / f"{nombre}.pdf")
         marcar_export_pendiente(n, output_path, PDF_STYLE)
         self.paso.emit(f"P{n:02d}: disparando ExportarPDF.js ({nombre})…")
-        if quark_cdp.ejecutar_script(EXPORTAR_PDF_JS, timeout=60.0):
-            self.paso.emit(f"P{n:02d}: export disparado vía CDP (sin pyautogui).")
-        else:
-            if not (self.coord_export_script and self.coord_play):
-                _log.warning("P%02d: CDP no disponible y faltan coords 'export_script'/'play'.", n)
-                return False
-            self.paso.emit(f"P{n:02d}: CDP no disponible, disparando por clic en el palette…")
-            if not a.click_script_y_play(self.coord_export_script, self.coord_play, espera=3.0):
-                return False
+        if not quark_cdp.ejecutar_script(EXPORTAR_PDF_JS, timeout=60.0):
+            _log.warning("P%02d: no se pudo disparar ExportarPDF.js por CDP.", n)
+            return False
+
         self.paso.emit(f"P{n:02d}: esperando el resultado del script…")
         t0 = time.time()
         while time.time() - t0 < TIMEOUT_EXPORT_STATUS:
-            a.esperar_y_cerrar_dialogo_fuentes(timeout=0.5)
             if a.simular:
                 return True
             encontrado, exportado, error = _leer_export_status(n)
@@ -274,7 +289,7 @@ class PdfExportOrchestrator(QObject):
     apagado_auto = pyqtSignal(str)
 
     def __init__(self, fn_listar_mandar, fn_quark_exe, fn_pdf_root,
-                 fn_finalizado_ok=None, fn_confirmar_inicio=None, fn_coords_export=None,
+                 fn_finalizado_ok=None, fn_confirmar_inicio=None,
                  fn_pre_export=None, modo: str = MODO_BOT, simular=False, parent=None):
         """
         fn_listar_mandar() -> list[(folio, Path)]   (qxp candidatos en 'mandar')
@@ -286,8 +301,8 @@ class PdfExportOrchestrator(QObject):
         fn_pre_export(folio) -> "exportar"|"descartar"  (gate en hilo GUI ANTES de la cuenta
                                                        regresiva: si ya hay PDF, avisa; "descartar"
                                                        saltea la página sin reexportar)
-        fn_coords_export() -> (coord_export_script, coord_play)  (calibración del modo script)
-        modo: MODO_BOT (pyautogui, default) | MODO_SCRIPT (ExportarPDF.js) — ver set_modo().
+        modo: MODO_BOT (pyautogui) | MODO_SCRIPT (ExportarPDF.js por CDP, sin pyautogui;
+              ver set_modo()).
         """
         super().__init__(parent)
         self._fn_listar_mandar = fn_listar_mandar
@@ -296,7 +311,6 @@ class PdfExportOrchestrator(QObject):
         self._fn_finalizado_ok = fn_finalizado_ok or (lambda _n: None)
         self._fn_confirmar_inicio = fn_confirmar_inicio or (lambda _n: True)
         self._fn_pre_export = fn_pre_export or (lambda _n: "exportar")
-        self._fn_coords_export = fn_coords_export or (lambda: (None, None))
         self._modo = modo if modo in (MODO_BOT, MODO_SCRIPT) else MODO_BOT
         self._enabled = False
         self._cancel_event = threading.Event()
@@ -426,17 +440,11 @@ class PdfExportOrchestrator(QObject):
             self.estado.emit("Exportar PDF: falta configurar la raíz de Imprenta temporal.")
             return
 
-        coord_export_script, coord_play = (None, None)
-        if self._modo == MODO_SCRIPT:
-            try:
-                coord_export_script, coord_play = self._fn_coords_export()
-            except Exception as e:
-                _log.warning("coords_export falló: %s", e)
-            if not (coord_export_script and coord_play) and not quark_cdp.disponible():
-                self.estado.emit(
-                    "Exportar PDF (modo Script): falta calibrar 'export_script'/'play' "
-                    "(o iniciar QuarkXPress para disparar por CDP).")
-                return
+        if self._modo == MODO_SCRIPT and not quark_cdp.disponible():
+            self.estado.emit(
+                "Exportar PDF (modo Script): QuarkXPress no está corriendo (o el canal "
+                "CDP no responde) — iniciá QuarkXPress 2018 antes de activar este bot.")
+            return
 
         self._activa = folio
 
@@ -472,9 +480,7 @@ class PdfExportOrchestrator(QObject):
         self._iniciar_watcher()
 
         self._worker = _ExportWorker(folio, qxp_path, quark_exe, self._automator,
-                                     Path(pdf_root), modo=self._modo,
-                                     coord_export_script=coord_export_script,
-                                     coord_play=coord_play, parent=self)
+                                     Path(pdf_root), modo=self._modo, parent=self)
         self._worker.paso.connect(self.log.emit)
         self._worker.terminado.connect(self._finalizar)
         self._worker.start()

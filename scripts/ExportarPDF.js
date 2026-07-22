@@ -14,8 +14,10 @@
 //                         { "exportado": true,  "folio": N }
 //                         { "exportado": false, "folio": N, "error": "<detalle>" }
 //
-//  El cierre del documento lo hace Python (QuarkAutomator.cerrar) igual que en
-//  el modo pyautogui: este script SOLO exporta y deja el flag de resultado.
+//  Este script se dispara por CDP (sin pyautogui, ver services/quark_cdp.py) y, tras
+//  exportar con éxito, GUARDA y CIERRA el proyecto él mismo (mismo patrón que
+//  PegarNota v6): Python ya no tiene forma de cerrarlo por Ctrl+F4 sin robarle el foco
+//  a otro operador, así que el cierre queda 100% de este lado.
 // =============================================================
 (function () {
   var _appdataScripts = "C:/Users/usuario/AppData/Roaming/ArmadorHuarpe/scripts/";
@@ -61,6 +63,12 @@
     }
 
     _escribirStatus({ exportado: true, folio: folio });
+
+    // Guardar y cerrar el proyecto (mismo patrón que PegarNota v6): el export no debería
+    // dejar cambios sin guardar, pero por las dudas se guarda antes de cerrar. Envuelto en
+    // try/catch propio para no pisar el status ya escrito si algo falla acá.
+    try { app.activeProject().saveProject(); } catch (eS) {}
+    try { app.activeProject().closeProject(); } catch (eC) {}
   } catch (err) {
     _escribirStatus({ exportado: false, folio: folio, error: String(err) });
   }
