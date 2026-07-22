@@ -29,6 +29,28 @@ class CanceladoError(Exception):
     """Se lanza para abortar la secuencia del automático (kill-switch Esc×5)."""
     pass
 
+
+def lanzar_quark_sin_robar_foco(quark_exe: str, qxp_path):
+    """Lanza QuarkXPress con `qxp_path` sin que la ventana se active/robe el foreground.
+
+    Windows le concede automáticamente a un proceso hijo el derecho a robar el
+    foreground cuando el proceso que lo lanza (ArmadorHuarpe) tiene el foco de entrada
+    en ese instante — que es el caso normal en el Armado/Export automáticos (el usuario
+    acaba de interactuar con la cuenta regresiva). Pedirle al proceso que arranque con
+    `STARTUPINFO.wShowWindow = SW_SHOWMINNOACTIVE` evita que la ventana se muestre
+    activa/al frente desde el arranque mismo, en vez de corregirlo después por Win32.
+
+    Solo tiene sentido para el camino 100% CDP (donde nadie necesita ver/tocar la
+    ventana de Quark); el modo pyautogui sigue necesitando la ventana visible y en
+    foco, así que no debe usar este lanzador.
+
+    Devuelve el Popen, igual que un `subprocess.Popen` normal."""
+    import subprocess
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 7  # SW_SHOWMINNOACTIVE: visible en la barra de tareas, minimizada, sin foco
+    return subprocess.Popen([quark_exe, str(qxp_path)], shell=False, startupinfo=si)
+
 # Al duplicar (Ctrl+D), el clon aparece desplazado abajo-derecha unos px. Para "agarrarlo"
 # con el mouse hay que apuntar corrido en ese sentido respecto del centro del original.
 CLON_OFFSET_X = 14

@@ -175,7 +175,14 @@ class _ExportWorker(QThread):
             self.paso.emit(f"P{n:02d}: abriendo {self.qxp_path.name}…")
             if not a.simular:
                 try:
-                    subprocess.Popen([self.quark_exe, str(self.qxp_path)], shell=False)
+                    if self.modo == MODO_SCRIPT:
+                        # Camino silencioso: nadie necesita ver/tocar esta ventana, así que
+                        # se lanza sin robar el foreground (ver services.quark_auto).
+                        from services.quark_auto import lanzar_quark_sin_robar_foco
+                        lanzar_quark_sin_robar_foco(self.quark_exe, self.qxp_path)
+                    else:
+                        # MODO_BOT necesita la ventana real en foco (focus_quark más abajo).
+                        subprocess.Popen([self.quark_exe, str(self.qxp_path)], shell=False)
                 except Exception as e:
                     _log.warning("Export P%02d: no se pudo abrir Quark: %s", n, e)
                     self.terminado.emit(n, ERROR)

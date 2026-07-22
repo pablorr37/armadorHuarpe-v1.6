@@ -6010,11 +6010,15 @@ class MainWindow(QMainWindow):
             if not (quark_exe and Path(quark_exe).exists()):
                 _log.error("Auto P%02d: no se encontró el ejecutable de Quark 2018.", numero)
                 return False
-            # Modo automático: dejar el flag para que PegarNota v6 (al dispararlo el bot con el
-            # único clic) guarde y cierre el proyecto y avise por armado_status.json.
+            # Modo automático: dejar el flag para que PegarNota v6 (disparado por CDP, sin
+            # foco — ver services/quark_cdp.py) guarde y cierre el proyecto y avise por
+            # armado_status.json. Se lanza Quark sin robar el foreground (ver
+            # services.quark_auto.lanzar_quark_sin_robar_foco): nadie necesita ver/tocar
+            # esa ventana en este camino.
             from controller.auto_mode import marcar_auto_pendiente
+            from services.quark_auto import lanzar_quark_sin_robar_foco
             marcar_auto_pendiente(numero)
-            subprocess.Popen([quark_exe, str(qxp)], shell=False)
+            lanzar_quark_sin_robar_foco(quark_exe, qxp)
             self.controller.marcar_pegadas(numero, None, texto)
             return True
         except Exception as e:
