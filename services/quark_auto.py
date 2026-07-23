@@ -73,31 +73,29 @@ def lanzar_quark_sin_robar_foco(quark_exe: str, qxp_path):
 
 
 def mostrar_quark_sin_activar() -> bool:
-    """Restaura/muestra la ventana de Quark (si estaba minimizada) SIN activarla — no le
-    quita el foco a quien esté usando la PC.
+    """Maximiza la ventana de Quark antes del pegado.
 
     Confirmado en vivo (geo_diag.txt de una corrida real): con la ventana minimizada,
-    Quark deja `getBoundingClientRect()` en cero (no está renderizando), y PegarNota
-    v6.js necesita que SÍ esté renderizando para que su compensación de pasteboard→
-    página (COMP_X/COMP_Y, ver ese script) funcione — sin eso, los recursos movidos
-    desde el pasteboard (plantilla 1) quedan en la coordenada cruda del pasteboard, muy
-    fuera de la maqueta, en vez de la posición real de la página. Las plantillas 2/3 no
-    pasan por el pasteboard y no sufren este problema.
+    PegarNota v6.js no puede completar la compensación de pasteboard→página
+    (COMP_X/COMP_Y, ver ese script) — los recursos movidos desde el pasteboard
+    (plantilla 1) quedan en la coordenada cruda del pasteboard, fuera de la maqueta.
+    Las plantillas 2/3 no pasan por el pasteboard y no sufren este problema.
 
-    Por eso, a diferencia de `VigilanteForeground` (pensado para minimizar Quark cuando
-    NO hace falta que renderice, p. ej. durante el export), el armado necesita mostrar
-    la ventana ANTES de disparar el script y recién minimizarla al terminar — igual que
-    hacía el flujo viejo con pyautogui (maximizada+foco durante todo el proceso), pero
-    sin robar el foco: `SW_SHOWNOACTIVATE` la deja visible sin activarla.
+    Se probaron variantes que evitan robar el foco (`SW_SHOWNOACTIVATE`, y una
+    ventana posicionada fuera del área visible de los monitores) pero ninguna dio
+    un renderizado confiable en pruebas repetidas, y además una ventana fuera de
+    pantalla sigue dejando visibles paletas flotantes de Quark (JS, estilos) en
+    cualquier parte del escritorio — peor experiencia que la maximizada. Se vuelve
+    al patrón simple y confiable del flujo viejo: maximizar (`SW_MAXIMIZE`, con
+    foco) → pegar → minimizar al terminar.
 
-    Devuelve True si encontró la ventana (no garantiza que Windows la haya restaurado;
-    `ShowWindow` no da una señal de éxito útil para este caso)."""
+    Devuelve True si encontró la ventana."""
     try:
         import ctypes
         hwnd = encontrar_hwnd_quark_principal() or encontrar_hwnd_quark()
         if not hwnd:
             return False
-        ctypes.windll.user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+        ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
         return True
     except Exception as e:
         _log.warning("mostrar_quark_sin_activar falló: %s", e)
