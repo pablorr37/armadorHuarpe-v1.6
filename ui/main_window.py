@@ -1066,10 +1066,35 @@ class MainWindow(QMainWindow):
         crear_base_action.triggered.connect(self.on_crear_base)
         acciones_menu.addAction(crear_base_action)
 
-        # Acción: seleccionar y cargar una edición existente
+        # Submenú "Edición": seleccionar edición + acciones de limpieza.
+        menu_edicion = QMenu("Edición", self)
+        acciones_menu.addMenu(menu_edicion)
+
         seleccionar_edicion_action = QAction("Seleccionar edición", self)
         seleccionar_edicion_action.triggered.connect(self.on_seleccionar_edicion)
-        acciones_menu.addAction(seleccionar_edicion_action)
+        menu_edicion.addAction(seleccionar_edicion_action)
+
+        menu_edicion.addSeparator()
+
+        act_limpiar_edicion = QAction("Limpiar edición actual", self)
+        act_limpiar_edicion.triggered.connect(self.on_limpiar_edicion_actual)
+        menu_edicion.addAction(act_limpiar_edicion)
+
+        act_limpiar_noticias = QAction("Limpiar noticias", self)
+        act_limpiar_noticias.triggered.connect(self.on_limpiar_noticias_edicion)
+        menu_edicion.addAction(act_limpiar_noticias)
+
+        act_limpiar_avisos = QAction("Limpiar avisos", self)
+        act_limpiar_avisos.triggered.connect(self.on_limpiar_avisos_edicion)
+        menu_edicion.addAction(act_limpiar_avisos)
+
+        act_limpiar_quark = QAction("Limpiar archivos Quark", self)
+        act_limpiar_quark.triggered.connect(self.on_limpiar_quark_edicion)
+        menu_edicion.addAction(act_limpiar_quark)
+
+        act_limpiar_pdf = QAction("Limpiar PDF", self)
+        act_limpiar_pdf.triggered.connect(self.on_limpiar_pdf_edicion)
+        menu_edicion.addAction(act_limpiar_pdf)
 
         acciones_menu.addSeparator()
         # Acción: Actualizar páginas (limpia caché y fuerza poll)
@@ -5475,6 +5500,15 @@ class MainWindow(QMainWindow):
         if not self.timer.isActive():
             self.timer.start()
 
+        # Limpiar ~/Downloads/armadorHuarpe de material ya copiado de ediciones
+        # anteriores (deja intacto lo que todavía no se copió, por si hay algo en
+        # curso) — antes de arrancar el watcher nuevo.
+        try:
+            from services.chrome_watcher import limpiar_descargas_procesadas
+            limpiar_descargas_procesadas()
+        except Exception as e:
+            _log.warning("limpiar_descargas_procesadas falló: %s", e)
+
         # Watcher de extensión Chrome — arranca junto con la base.
         # Si ya había uno (p.ej. al cambiar de edición), detenerlo primero.
         prev = getattr(self, "_chrome_watcher", None)
@@ -5543,6 +5577,98 @@ class MainWindow(QMainWindow):
         self._activar_base_y_arrancar()
         self.statusBar().showMessage(
             f"Edición cargada: {Path(carpeta).name}", 4000)
+
+    # ── Submenú Edición → limpieza de recursos ──────────────────────────
+    def on_limpiar_edicion_actual(self):
+        resp = QMessageBox.question(
+            self, "Limpiar edición actual",
+            "Esta acción limpiará la edición actual de todos los recursos "
+            "(noticias, fotos, QR, archivos de Quark y PDF) de todas las páginas, "
+            "¿desea continuar?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if resp != QMessageBox.Yes:
+            return
+        by = self.controller.usuario or ""
+        errores = self.controller.limpiar_edicion_completa(by=by)
+        self._refrescar_tras_limpieza()
+        if errores:
+            detalle = "\n".join(f"P{n:02d}: {'; '.join(msgs)}" for n, msgs in sorted(errores.items()))
+            QMessageBox.warning(
+                self, "Limpiar edición actual",
+                f"Se limpió la edición, pero hubo problemas en {len(errores)} página(s):\n\n{detalle}")
+        else:
+            self.statusBar().showMessage("Edición actual limpiada.", 5000)
+
+    def _limpiar_todas_las_paginas(self, nombre_accion: str, fn) -> None:
+        """Corre `fn(numero)` para las 16 páginas, juntando errores por página."""
+        errores: dict[int, str] = {}
+        for n in range(1, 17):
+            try:
+                fn(n)
+            except Exception as e:
+                errores[n] = str(e)
+        self._refrescar_tras_limpieza()
+        if errores:
+            detalle = "\n".join(f"P{n:02d}: {msg}" for n, msg in sorted(errores.items()))
+            QMessageBox.warning(
+                self, nombre_accion,
+                f"Se completó, pero hubo problemas en {len(errores)} página(s):\n\n{detalle}")
+        else:
+            self.statusBar().showMessage(f"{nombre_accion}: listo.", 5000)
+
+    def on_limpiar_noticias_edicion(self):
+        resp = QMessageBox.question(
+            self, "Limpiar noticias",
+            "¿Limpiar las noticias (TXT, fotos, JSON) de todas las páginas de la edición actual?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if resp != QMessageBox.Yes:
+            return
+        by = self.controller.usuario or ""
+        self._limpiar_todas_las_paginas(
+            "Limpiar noticias", lambda n: self.controller.limpiar_noticias_pagina(n, by=by))
+
+    def on_limpiar_avisos_edicion(self):
+        resp = QMessageBox.question(
+            self, "Limpiar avisos",
+            "¿Limpiar los avisos (flags + archivos) de todas las páginas de la edición actual?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if resp != QMessageBox.Yes:
+            return
+        by = self.controller.usuario or ""
+        self._limpiar_todas_las_paginas(
+            "Limpiar avisos", lambda n: self.controller.limpiar_avisos_pagina(n, by=by))
+
+    def on_limpiar_quark_edicion(self):
+        resp = QMessageBox.question(
+            self, "Limpiar archivos Quark",
+            "¿Borrar todos los archivos .qxp (en cualquier ubicación) de todas las "
+            "páginas de la edición actual?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if resp != QMessageBox.Yes:
+            return
+        self._limpiar_todas_las_paginas(
+            "Limpiar archivos Quark", self.controller.limpiar_quark_pagina)
+
+    def on_limpiar_pdf_edicion(self):
+        resp = QMessageBox.question(
+            self, "Limpiar PDF",
+            "¿Borrar los PDF generados de todas las páginas de la edición actual?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if resp != QMessageBox.Yes:
+            return
+        self._limpiar_todas_las_paginas(
+            "Limpiar PDF", self.controller.limpiar_pdf_pagina)
+
+    def _refrescar_tras_limpieza(self) -> None:
+        """Refresca grilla/estado en memoria después de cualquier limpieza masiva."""
+        try:
+            self.controller.refrescar_avisos_desde_ini()
+        except Exception as e:
+            _log.warning("refrescar_avisos_desde_ini tras limpieza falló: %s", e)
+        try:
+            self.colorear_paginas()
+        except Exception as e:
+            _log.warning("colorear_paginas tras limpieza falló: %s", e)
 
     def on_toggle_avisos(self):
         """Oculta/muestra las previsualizaciones de aviso en la grilla (toggle)."""
@@ -5790,19 +5916,15 @@ class MainWindow(QMainWindow):
             return True
 
     def _pdf_pre_export(self, folio) -> str:
-        """Gate previo al export (hilo GUI), ANTES de la cuenta regresiva. Si ya existe un PDF
-        para la página (imprenta/OK), avisa SIN cuenta regresiva: 'reemplazar' → reexporta,
-        'descartar' → no reexporta. Si no hay PDF, exporta directo. Devuelve 'exportar'|'descartar'."""
+        """Gate previo al export (hilo GUI). Si ya existe un PDF para la página
+        (imprenta/OK), se saltea en silencio — sin preguntar nada, sin cuenta
+        regresiva: el bot solo debe exportar cuando un poll NO encuentra PDF ya
+        generado. Devuelve 'exportar'|'descartar'."""
         try:
             if self.pdf_orq is not None and self.pdf_orq.simular:
                 return "exportar"
             pdf = self.controller.file_service.find_pdf_for_page(int(folio))
-            if not pdf:
-                return "exportar"
-            from ui.countdown_dialog import AvisoPdfExistenteDialog
-            dlg = AvisoPdfExistenteDialog(folio, parent=self)
-            dlg.exec_()
-            return "exportar" if dlg.eleccion == "reemplazar" else "descartar"
+            return "descartar" if pdf else "exportar"
         except Exception as e:
             _log.warning("pre_export PDF P%s falló: %s", folio, e)
             return "exportar"

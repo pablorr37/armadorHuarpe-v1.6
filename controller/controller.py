@@ -1255,6 +1255,106 @@ class ArmadorController:
             pag.tapa_foto = False
             pag.tapa_titulo = False
 
+    # ──────────────────────────────────────────────────────────────
+    # Limpieza de recursos por página / edición completa (menú Acciones → Edición)
+    # ──────────────────────────────────────────────────────────────
+
+    def limpiar_noticias_pagina(self, numero: int, by: str = "") -> int:
+        """Borra TODAS las carpetas de noticias (TXT + fotos + JSON) de la página y
+        resetea la asignación en el INI. Devuelve cuántas carpetas borró."""
+        borradas = 0
+        for nota in self.file_service.get_notas(numero):
+            d = nota.get("dir")
+            if d and d.exists():
+                try:
+                    shutil.rmtree(d)
+                    borradas += 1
+                except Exception as e:
+                    _log.warning("limpiar_noticias_pagina P%02d: no se pudo borrar %s (%s)",
+                                 numero, d, e)
+        self.file_service.limpiar_notas(numero, by=by)
+        pag = self.gestor_paginas.obtener_pagina(numero)
+        if pag:
+            pag.asignado = False
+            pag.asignada_por_ini = False
+        return borradas
+
+    def limpiar_avisos_pagina(self, numero: int, by: str = "") -> int:
+        """Resetea los flags de aviso y borra el/los archivo(s) de aviso ya copiados a
+        materiales/Pnn/. Devuelve cuántos archivos borró."""
+        borrados = 0
+        for segundo in (False, True):
+            try:
+                f = self.file_service.find_aviso_image_for_page(numero, segundo=segundo)
+            except Exception:
+                f = None
+            if f and f.exists():
+                try:
+                    f.unlink()
+                    borrados += 1
+                except Exception as e:
+                    _log.warning("limpiar_avisos_pagina P%02d: no se pudo borrar %s (%s)",
+                                 numero, f, e)
+        self.file_service.write_page_entry(
+            numero, aviso_full=False, aviso_half=False, aviso_footer=False,
+            aviso_robapagina=False, aviso_doblemedia=False,
+            aviso_nombre="", aviso_nombre2="", by=by)
+        pag = self.gestor_paginas.obtener_pagina(numero)
+        if pag:
+            pag.aviso_full = pag.aviso_half = pag.aviso_footer = False
+            pag.aviso_robapagina = pag.aviso_doblemedia = False
+            pag.aviso_nombre = pag.aviso_nombre2 = ""
+        return borrados
+
+    def limpiar_quark_pagina(self, numero: int) -> int:
+        """Borra (a papelera) todos los .qxp de la página en cualquier ubicación.
+        Propaga FileServiceError si alguno está abierto en Quark (todo-o-nada)."""
+        return self.file_service.eliminar_qxp_todas_ubicaciones(numero)
+
+    def limpiar_pdf_pagina(self, numero: int) -> bool:
+        """Borra el PDF de la página si existe. Devuelve True si había uno."""
+        pdf = self.file_service.find_pdf_for_page(numero)
+        if not pdf:
+            return False
+        self.file_service.eliminar_pdf(pdf)
+        return True
+
+    def limpiar_edicion_completa(self, by: str = "") -> dict:
+        """Limpia TODOS los recursos (noticias, avisos, Quark, PDF) y resetea flags de
+        armado/tapa de las 16 páginas. Devuelve un resumen {numero: [errores]} solo
+        para las páginas que tuvieron algún problema (p. ej. QXP bloqueado en Quark)."""
+        errores: dict[int, list[str]] = {}
+        for n in range(1, 17):
+            try:
+                self.limpiar_noticias_pagina(n, by=by)
+            except Exception as e:
+                errores.setdefault(n, []).append(f"noticias: {e}")
+            try:
+                self.limpiar_avisos_pagina(n, by=by)
+            except Exception as e:
+                errores.setdefault(n, []).append(f"avisos: {e}")
+            try:
+                self.limpiar_quark_pagina(n)
+            except Exception as e:
+                errores.setdefault(n, []).append(f"Quark: {e}")
+            try:
+                self.limpiar_pdf_pagina(n)
+            except Exception as e:
+                errores.setdefault(n, []).append(f"PDF: {e}")
+            self.file_service.write_page_entry(
+                n, listo_para_armar=False, armado_bot=False, error_pegado=False,
+                tapa_foto=False, tapa_titulo=False, by=by)
+            pag = self.gestor_paginas.obtener_pagina(n)
+            if pag:
+                pag.listo_para_armar = False
+                pag.armado_bot = False
+                pag.error_pegado = False
+                pag.tapa_foto = False
+                pag.tapa_titulo = False
+                pag.armado = pag.fotocromia = pag.corregido = False
+                pag.apdf = pag.revisado = pag.impreso = False
+        return errores
+
 
 
 
@@ -1679,6 +1779,7 @@ class ArmadorController:
                 return False
 
             # Movimiento/copia exitoso
+            _log.info("Movido: %s -> %s", src, dest)
             return True
 
         except Exception as e:
@@ -1703,6 +1804,7 @@ class ArmadorController:
                 _log.error("devolver falló: %s -> %s", src, dest)
                 return False
 
+            _log.info("Devuelto: %s -> %s", src, dest)
             return True
 
         except Exception as e:

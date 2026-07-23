@@ -559,8 +559,9 @@ class StoryPanel(QWidget):
         prev_cols, prev_rows = self.title_grid.cols, self.title_grid.rows
         self.title_grid.update_dims(titulo_chars, titulo_lineas)
         if titulo_chars != prev_cols or titulo_lineas != prev_rows:
-            current_text = " ".join(l.strip() for l in self.title_grid.get_lines() if l.strip())
-            self.title_grid.set_text(current_text)
+            # .text() crudo (no get_lines(), que parte palabras por el corte duro de
+            # columna) — set_text() ya normaliza saltos reales a espacio correctamente.
+            self.title_grid.set_text(self.title_grid.text())
         self._titulo_lbl.setText(
             f"Título ({titulo_lineas} línea{'s' if titulo_lineas > 1 else ''} × {titulo_chars} chars)"
         )
@@ -657,7 +658,11 @@ class StoryPanel(QWidget):
             except Exception:
                 pass
 
-        titulo = " ".join(l.strip() for l in self.title_grid.get_lines() if l.strip())
+        # Texto crudo + split SOLO por Enters reales (no por el corte duro de columna
+        # de get_lines(), que partía palabras a la mitad del salto y las volvía a unir
+        # con un espacio espurio — ej. "llegar a" con la "a" cayendo en la fila
+        # siguiente terminaba en "llegara"). Mismo patrón que editor_nota_window.py.
+        titulo = " ".join(seg.strip() for seg in self.title_grid.text().split("\n") if seg.strip())
         contenido = " /// ".join([
             _normalizar_comillas(self.ed_volanta.toPlainText().strip()),
             _normalizar_comillas(titulo),

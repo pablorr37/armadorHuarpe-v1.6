@@ -5,11 +5,17 @@ from PyQt5.QtWidgets import QWidget, QApplication
 
 _CLR_BG        = QColor("#1a2535")
 _CLR_CELL      = QColor("#243247")
+_CLR_CELL_WARN = QColor("#3a3015")
 _CLR_CELL_OVR  = QColor("#3a1515")
 _CLR_GRID      = QColor("#334155")
 _CLR_SEP       = QColor("#e7885f")
 _CLR_TEXT      = QColor("#f1f5f9")
+_CLR_TEXT_WARN = QColor("#f5c542")
 _CLR_TEXT_OVR  = QColor("#ff6b6b")
+
+# Caracteres 1..cols: normal. cols+1..cols+2 (34/35 con cols=33): amarillo, todavía
+# aceptable. cols+3 en adelante (36+): rojo, claramente excedido.
+_WARN_COLS = 2
 _CLR_CURSOR    = QColor("#82b4ff")
 _CLR_FOCUS_BG  = QColor("#1e3450")
 _CLR_FOCUS_BDR = QColor("#82b4ff")
@@ -35,6 +41,7 @@ class TitleGridEditor(QWidget):
         self._row_starts: list[int] = [0]
         self._sel_anchor: int | None = None
         self._undo_stack: list[tuple[str, int]] = []
+        self._redo_stack: list[tuple[str, int]] = []
         self._dragging = False
 
         self.setFocusPolicy(Qt.StrongFocus)
@@ -86,6 +93,7 @@ class TitleGridEditor(QWidget):
         self._cursor = len(t)
         self._sel_anchor = None
         self._undo_stack.clear()
+        self._redo_stack.clear()
         self.update()
         self.textChanged.emit()
 
@@ -203,11 +211,23 @@ class TitleGridEditor(QWidget):
         self._undo_stack.append((self._text, self._cursor))
         if len(self._undo_stack) > 200:
             self._undo_stack = self._undo_stack[-200:]
+        self._redo_stack.clear()  # cualquier edición nueva invalida el redo pendiente
 
     def _undo(self) -> None:
         if not self._undo_stack:
             return
+        self._redo_stack.append((self._text, self._cursor))
         self._text, self._cursor = self._undo_stack.pop()
+        self._row_starts = self._compute_row_starts(self._text)
+        self._sel_anchor = None
+        self.update()
+        self.textChanged.emit()
+
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append((self._text, self._cursor))
+        self._text, self._cursor = self._redo_stack.pop()
         self._row_starts = self._compute_row_starts(self._text)
         self._sel_anchor = None
         self.update()
@@ -385,8 +405,12 @@ class TitleGridEditor(QWidget):
 
         # ── Ctrl ─────────────────────────────────────────────────────────────
         if ctrl:
-            if key == Qt.Key_Z:
+            if key == Qt.Key_Z and shift:
+                self._redo()          # Ctrl+Shift+Z
+            elif key == Qt.Key_Z:
                 self._undo()
+            elif key == Qt.Key_Y:
+                self._redo()          # Ctrl+Y
             elif key == Qt.Key_A:
                 self._sel_anchor = 0
                 self._cursor = len(self._text)
@@ -554,7 +578,12 @@ class TitleGridEditor(QWidget):
             for col in range(total_cols):
                 x = int(padding + col * cell_w)
                 y = int(padding + row * cell_h)
-                bg = _CLR_CELL_OVR if col >= self.cols else _CLR_CELL
+                if col >= self.cols + _WARN_COLS:
+                    bg = _CLR_CELL_OVR
+                elif col >= self.cols:
+                    bg = _CLR_CELL_WARN
+                else:
+                    bg = _CLR_CELL
                 p.fillRect(x, y, int(cell_w), int(cell_h), bg)
                 p.drawRect(x, y, int(cell_w), int(cell_h))
 
@@ -584,7 +613,12 @@ class TitleGridEditor(QWidget):
             row, col = self._char_display_pos(i)
             if col >= total_cols:
                 break
-            clr = _CLR_TEXT_OVR if col >= self.cols else _CLR_TEXT
+            if col >= self.cols + _WARN_COLS:
+                clr = _CLR_TEXT_OVR
+            elif col >= self.cols:
+                clr = _CLR_TEXT_WARN
+            else:
+                clr = _CLR_TEXT
             x = int(padding + col * cell_w)
             y = int(padding + row * cell_h)
             tw = fm.horizontalAdvance(ch)

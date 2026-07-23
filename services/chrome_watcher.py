@@ -55,6 +55,42 @@ def _generar_qrs_desde_cuerpo(cuerpo: str, dest_dir: Path) -> None:
         generar_qr_png(url, dest_dir / f"QR_{idx:02d}.png")
 
 
+def limpiar_descargas_procesadas(watch_dir: Path | None = None) -> int:
+    """Borra las subcarpetas de ~/Downloads/armadorHuarpe cuyo _pending.json diga
+    "copiado": true (material de ediciones ya usado, que se va acumulando día a día
+    sin que nada lo limpie). Deja intactas las subcarpetas con "copiado": false o sin
+    _pending.json legible, para no arriesgar una descarga todavía en curso si la app
+    se reinicia a mitad de una edición. Pensado para llamarse al conectar/crear una
+    base (ver ui/main_window.py _activar_base_y_arrancar). Devuelve cuántas se borraron."""
+    watch_dir = watch_dir or ChromeWatcher._WATCH_DIR
+    if not watch_dir.exists():
+        return 0
+    borradas = 0
+    for subdir in sorted(watch_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        pending_path = subdir / "_pending.json"
+        if not pending_path.exists():
+            continue
+        try:
+            data = json.loads(pending_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _log.warning("limpiar_descargas_procesadas: no se pudo leer %s (%s); se deja.",
+                         pending_path, exc)
+            continue
+        if not data.get("copiado"):
+            continue
+        try:
+            shutil.rmtree(subdir, ignore_errors=True)
+            borradas += 1
+        except Exception as exc:
+            _log.warning("limpiar_descargas_procesadas: no se pudo borrar %s (%s).", subdir, exc)
+    if borradas:
+        _log.info("limpiar_descargas_procesadas: %d carpeta(s) ya copiadas borradas de %s.",
+                  borradas, watch_dir)
+    return borradas
+
+
 class ChromeWatcher(QObject):
     """
     Escanea ~/Downloads/armadorHuarpe/ cada N segundos buscando carpetas

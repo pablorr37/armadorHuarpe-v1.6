@@ -1369,6 +1369,16 @@ class EditorNotaWindow(QMainWindow):
             return
         json_path = panel._txt_path.with_suffix(".json")
         if not json_path.exists():
+            # Noticia sin guardar todavía: el combo de foto es compartido y hereda lo
+            # que quedó puesto por la pestaña anterior. Para una noticia SECUNDARIA
+            # recién agregada, el default debe ser "Sin foto" (no "2 columnas").
+            es_secundaria = getattr(panel, "_story_index", 0) >= 1
+            if es_secundaria:
+                idx = self._cb_foto_tipo.findText("Sin foto")
+                if idx >= 0:
+                    self._cb_foto_tipo.blockSignals(True)
+                    self._cb_foto_tipo.setCurrentIndex(idx)
+                    self._cb_foto_tipo.blockSignals(False)
             return
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -1441,8 +1451,11 @@ class EditorNotaWindow(QMainWindow):
                 self._qr_path = qr
                 self._fotos_browser.set_qr_path(qr)
 
-        # Tipo de foto
-        foto_tipo = (data.get("foto_tipo") or "2 columnas").strip()
+        # Tipo de foto: default "2 columnas" para la principal, "Sin foto" para
+        # secundarias (si el JSON guardado no trae foto_tipo).
+        es_secundaria = getattr(panel, "_story_index", 0) >= 1
+        default_foto = "Sin foto" if es_secundaria else "2 columnas"
+        foto_tipo = (data.get("foto_tipo") or default_foto).strip()
         if foto_tipo == "3 columnas wide":   # legacy: renombrado a "3 columnas"
             foto_tipo = "3 columnas"
         idx = self._cb_foto_tipo.findText(foto_tipo)
