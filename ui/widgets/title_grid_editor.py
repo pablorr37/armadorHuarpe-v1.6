@@ -102,12 +102,17 @@ class TitleGridEditor(QWidget):
     # -----------------------------------------------------------------------
 
     def _compute_row_starts(self, text: str) -> list[int]:
-        """Una fila termina en un salto real ('\\n') o al llegar a cols (corte duro).
+        """Una fila termina en un salto real ('\\n') o al llegar a cols + _WARN_COLS
+        (corte duro). El corte se corre hasta el final de la zona amarilla (35 con
+        cols=33), no en el 33, para que los caracteres 34/35 sean un tramo de aviso
+        realmente ocupable en cualquier fila — antes el corte a los 33 empujaba esos
+        caracteres a la fila siguiente sin que el operador pudiera verlos ahí.
         Se limita a self.rows filas: en la última, el resto desborda horizontal (rojo)."""
         starts = [0]
         col = 0
         i = 0
         n = len(text)
+        limite = self.cols + _WARN_COLS
         while i < n and len(starts) < self.rows:
             ch = text[i]
             if ch == "\n":
@@ -115,7 +120,7 @@ class TitleGridEditor(QWidget):
                 col = 0
             else:
                 col += 1
-                if col >= self.cols and i + 1 < n:
+                if col >= limite and i + 1 < n:
                     if text[i + 1] == "\n":
                         # El corte duro coincide con un salto real: consumirlo junto
                         # (evita una fila vacía duplicada).
