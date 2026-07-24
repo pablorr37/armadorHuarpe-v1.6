@@ -1,5 +1,5 @@
 from pathlib import Path
-import sys, os, re, unicodedata
+import sys, os, re, unicodedata, json
 import configparser
 
 class Config:
@@ -167,6 +167,29 @@ class Config:
         if "SECCIONES" not in cfg:
             cfg["SECCIONES"] = {}
         cfg["SECCIONES"]["secciones_textuales"] = ", ".join(lista)
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    @property
+    def secciones_textuales_deduccion(self) -> dict:
+        """{seccion_normalizada: {"base": int, "umbral": int}} — cuánto descuentan del
+        cupo del cuerpo los textuales de cada sección especial (ver es_seccion_textual/
+        _secciones_textuales_norm en controller.py para la normalización)."""
+        cfg = configparser.ConfigParser()
+        if not cfg.read(self.CONFIG_FILE, encoding="utf-8-sig"):
+            cfg.read(self.CONFIG_FILE, encoding="cp1252")
+        raw = cfg.get("SECCIONES", "secciones_textuales_deduccion", fallback="{}")
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    def save_secciones_textuales_deduccion(self, data: dict) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8-sig")
+        if "SECCIONES" not in cfg:
+            cfg["SECCIONES"] = {}
+        cfg["SECCIONES"]["secciones_textuales_deduccion"] = json.dumps(data, ensure_ascii=False)
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
             cfg.write(f)
 

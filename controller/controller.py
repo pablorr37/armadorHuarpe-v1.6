@@ -1966,6 +1966,15 @@ class ArmadorController:
         s = "".join(c for c in s if not unicodedata.combining(c))
         return bool(s) and s in set(self._secciones_textuales_norm())
 
+    def deduccion_textual_seccion(self, seccion: str) -> tuple:
+        """(base, umbral) configurados para los textuales de esta sección especial (ver
+        SeccionesTextualesDialog), o (0, 0) si no hay config -- sin descuento."""
+        import unicodedata
+        s = unicodedata.normalize("NFKD", (seccion or "").strip().lower())
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        cfg = config_global.secciones_textuales_deduccion.get(s) or {}
+        return int(cfg.get("base", 0)), int(cfg.get("umbral", 0))
+
     def _geometria_para_js(self, comp: dict) -> dict:
         """Geometría en mm de documento para que PegarNota v6 la aplique directo al DOM:
           {"foto": {"ancho_mm", "alto_mm"}, "recursos": {"<rol>": {"x_mm", "y_mm"}}}

@@ -838,7 +838,7 @@
 
     var seccionNorm = normalizar(seccion);
     // Sección ESPECIAL (textuales del bloque "Textuales", hoy Café): los textuales van por la vía
-    // dedicada (pegarTextualesCafePolitica), no por el textual estructurado. La lista viene de
+    // dedicada (pegarTextualesSeccionEspecial), no por el textual estructurado. La lista viene de
     // config vía data_pagina.json; "cafe de la politica" queda como respaldo si no llegó.
     var esSeccionEspecial = seccionesTextuales.indexOf(seccionNorm) >= 0 ||
                             (seccionesTextuales.length === 0 && seccionNorm === "cafe de la politica");
@@ -1009,29 +1009,26 @@
     // =========================================================
     // 🔹 TEXTUALES / DATO / NÚMERO / QR
     // =========================================================
-    function _extraerEntreComillas(s) {
-      var out = [];
-      if (!s) return out;
-      var re = /\u201c([^\u201d]+)\u201d|"([^"]+)"/g;
-      var m;
-      while ((m = re.exec(s)) !== null) {
-        var frase = (m[1] || m[2] || "").trim();
-        if (frase) out.push(frase);
-      }
-      return out;
-    }
-
-    // Textuales dedicados de Café de la Política (siempre se ejecuta para esa sección)
-    function pegarTextualesCafePolitica() {
-      var auto = (notaPrincipal && notaPrincipal.textuales_auto) ? notaPrincipal.textuales_auto : [];
-      var t1 = cleanHTML(auto[0] || "");
-      var t2 = cleanHTML(auto[1] || "");
-      if (!t1 || !t2) {
-        var fuente = "";
-        for (var k = 0; k < auto.length; k++) { if (auto[k]) fuente += " " + auto[k]; }
-        var frases = _extraerEntreComillas(fuente);
-        if (frases.length >= 2)       { t1 = cleanHTML(frases[0]); t2 = cleanHTML(frases[1]); }
-        else if (frases.length === 1) { t1 = cleanHTML(frases[0]); }
+    // Textuales dedicados de secciones especiales (hoy Café de la Política; siempre se
+    // ejecuta para esas secciones). Lee notaPrincipal.textuales_especiales -- campo
+    // DEDICADO (bloque "Textuales", un <p> = una entrada), separado a propósito de
+    // notaPrincipal.textuales_auto (mecanismo general de detección de blockquotes en
+    // cualquier parte del cuerpo, usado para sugerir textuales estructurados en secciones
+    // normales). Antes ambos caminos compartían el mismo campo y un blockquote de OTRA
+    // parte del cuerpo podía colarse como textual espurio -- ver popup.js/htmlToCuerpo.
+    function pegarTextualesSeccionEspecial() {
+      var esp = (notaPrincipal && notaPrincipal.textuales_especiales) ? notaPrincipal.textuales_especiales : [];
+      var limpio = [];
+      for (var k = 0; k < esp.length; k++) { if (esp[k]) limpio.push(esp[k]); }
+      // Normalmente son exactamente 2 (los dos textuales reales, en orden). Si el bloque
+      // "Textuales" trajera un párrafo de más antes de los dos reales, nos quedamos con
+      // los últimos dos como red de seguridad.
+      var t1 = "", t2 = "";
+      if (limpio.length >= 2) {
+        t1 = cleanHTML(limpio[limpio.length - 2]);
+        t2 = cleanHTML(limpio[limpio.length - 1]);
+      } else if (limpio.length === 1) {
+        t1 = cleanHTML(limpio[0]);
       }
       var pie = tienePie();
       var BOXES_T1 = pie ? ["Box2086","Box2074","Box2080"] : ["Box2008","Box2017","Box2025"];
@@ -1184,7 +1181,7 @@
 
     // Secciones especiales (configurables, hoy Café de la Política): el texto/foto/aviso se pegan
     // por la rama universal; los textuales del bloque "Textuales" son un complemento dedicado.
-    if (esSeccionEspecial) pegarTextualesCafePolitica();
+    if (esSeccionEspecial) pegarTextualesSeccionEspecial();
 
     // =========================================================
     // 🔹 DIAGNÓSTICO

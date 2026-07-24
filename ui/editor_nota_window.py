@@ -45,6 +45,13 @@ def _calc_deduction(tipo: str, textos: list[str], mq: dict) -> int:
         return base + max(0, n - umbral) * 3
     return 0
 
+def _calc_deduction_seccion_especial(base: int, umbral: int, textos: list[str]) -> int:
+    """Misma forma que _calc_deduction('x2', ...) pero con base/umbral configurados por
+    sección especial (ver Config.secciones_textuales_deduccion) en vez de hardcodeados."""
+    t1 = len(textos[0]) if len(textos) > 0 else 0
+    t2 = len(textos[1]) if len(textos) > 1 else 0
+    return base + max(0, t1 - umbral) + max(0, t2 - umbral)
+
 def _calc_dato_deduction(texto: str, mq: dict) -> int:
     if not texto:
         return 0
@@ -738,6 +745,10 @@ class EditorNotaWindow(QMainWindow):
 
         self._detector = TextualDetector()
         self._stories: list[StoryPanel] = []
+        # Deducción por recursos (textual/dato/número/QR/foto) de la PRINCIPAL, cacheada
+        # aparte para poder sumarle el consumo de las secundarias aunque la principal no
+        # esté activa (ver _refresh_primary_secondary_deduction).
+        self._primary_resource_deduction: int = 0
         self._qr_path: Path | None = None
         self._body_highlight_range: tuple[int, int] | None = None
         self._highlight_source: str = ""  # "textual", "dato", "numero"
@@ -1232,6 +1243,7 @@ class EditorNotaWindow(QMainWindow):
             self._res_cache.pop(len(self._stories), None)
         self._btn_swap.setVisible(count >= 2)
         self._apply_all_story_limits()
+        self._refresh_primary_secondary_deduction()
 
     def _apply_all_story_limits(self):
         """Aplica los límites del config a todos los paneles de noticia. El panel
@@ -1619,6 +1631,10 @@ class EditorNotaWindow(QMainWindow):
         # Maqueta: priorizar la RESUELTA por sección/aviso (regla determinística) sobre la
         # guardada en el JSON (que suele ser genérica). Sincroniza nota.json de paso.
         self._textuales_auto: list = []
+        # Campo DEDICADO de las secciones especiales (bloque "Textuales"), separado de
+        # _textuales_auto (mecanismo general de sugerencia de textuales estructurados) --
+        # ver Bug 4d: no deben mezclarse.
+        self._textuales_especiales: list = []
         saved_maqueta = ""
         if dirs:
             first_json = dirs[0] / f"{dirs[0].name}.json"
@@ -1627,6 +1643,7 @@ class EditorNotaWindow(QMainWindow):
                     nota_data = json.loads(first_json.read_text(encoding="utf-8"))
                     saved_maqueta = nota_data.get("maqueta", "")
                     self._textuales_auto = nota_data.get("textuales_auto", []) or []
+                    self._textuales_especiales = nota_data.get("textuales_especiales", []) or []
                 except Exception:
                     pass
 
@@ -1715,6 +1732,10 @@ class EditorNotaWindow(QMainWindow):
         if not self._stories:
             return
         panel = panel or self._active_story()
+        if panel is not self._stories[0]:
+            # El cupo de la principal depende de cuánto usan las secundarias en su
+            # cuerpo — recalcular sin importar si la principal está activa ahora mismo.
+            self._refresh_primary_secondary_deduction()
         txt = panel.ed_cuerpo.toPlainText()
         if panel is self._stories[0] and self._hl_cuerpo is not None:
             self._hl_cuerpo.schedule_check(txt)
@@ -1759,21 +1780,71 @@ class EditorNotaWindow(QMainWindow):
         self._qr_path = path
         self._recalcular_deduccion()
 
+    def _secondary_stories_char_usage(self) -> int:
+        """Caracteres de cuerpo que usan las noticias secundarias (índice 1+) — es lo
+        único que le resta a la principal: las secundarias no tienen firma/epígrafe/foto
+        ni bajada propios."""
+        total = 0
+        for p in self._stories[1:]:
+            total += len(p.ed_cuerpo.toPlainText().replace('\n', ''))
+        return total
+
+    def _refresh_primary_secondary_deduction(self) -> None:
+        """Recompone el cupo de la principal (deducción por sus propios recursos +
+        consumo de las secundarias) sin necesitar que la principal esté activa."""
+        if not self._stories or len(self._stories) <= 1:
+            return
+        primary = self._stories[0]
+        base = self._primary_resource_deduction
+        primary.set_external_deduction(base + self._secondary_stories_char_usage())
+
     def _recalcular_deduccion(self) -> None:
+        total = self._calc_active_resource_deduction()
+
+        panel = self._active_story()
+        if panel is not None:
+            extra = total
+            if panel is self._stories[0]:
+                self._primary_resource_deduction = total
+                if len(self._stories) > 1:
+                    extra += self._secondary_stories_char_usage()
+            panel.set_external_deduction(extra)
+        # El límite efectivo cambió → refrescar el tinte "hasta el límite".
+        self._aplicar_extra_selections()
+
+    def _textuales_especiales_para_deduccion(self) -> list:
+        """Los textuales reales de la sección especial (bloque "Textuales"), en el mismo
+        campo dedicado que usa PegarNota v6.js para pegarlos en Quark (ver Bug 4d)."""
+        esp = [e for e in getattr(self, "_textuales_especiales", []) if e]
+        if len(esp) >= 2:
+            return [esp[-2], esp[-1]]
+        if len(esp) == 1:
+            return [esp[0]]
+        return []
+
+    def _calc_active_resource_deduction(self) -> int:
         total = 0
 
-        # Textual
-        tipo_label = self._cb_textual_tipo.currentText()
-        tipo_map = {
-            "simple": "simple", "x2": "x2", "x3": "x3",
-            "con foto": "con_foto", "con foto XL": "con_foto_xl",
-        }
-        tipo = tipo_map.get(tipo_label)
-        if tipo:
-            sel = self._textual_cards.selected_items()
-            if sel:
-                textos = [item.get("text", "") for item in sel]
-                total += _calc_deduction(tipo, textos, self._mq)
+        # Textual: las secciones especiales (Café) tienen su propia fórmula de deducción
+        # (config por sección, no por "tipo de textual" — ver es_seccion_textual), y no
+        # requieren elegir tipo en el combo.
+        if self.controller.es_seccion_textual(self._seccion):
+            textos_especiales = self._textuales_especiales_para_deduccion()
+            if textos_especiales:
+                base, umbral = self.controller.deduccion_textual_seccion(self._seccion)
+                total += _calc_deduction_seccion_especial(base, umbral, textos_especiales)
+        else:
+            tipo_label = self._cb_textual_tipo.currentText()
+            tipo_map = {
+                "simple": "simple", "x2": "x2", "x3": "x3",
+                "con foto": "con_foto", "con foto XL": "con_foto_xl",
+            }
+            tipo = tipo_map.get(tipo_label)
+            if tipo:
+                sel = self._textual_cards.selected_items()
+                if sel:
+                    textos = [item.get("text", "") for item in sel]
+                    total += _calc_deduction(tipo, textos, self._mq)
 
         # Dato
         for card in self._dato_cards:
@@ -1803,13 +1874,7 @@ class EditorNotaWindow(QMainWindow):
             total -= self._mq.get("sin_foto_bonus", 945)
         self._aplicar_sin_foto_ui(foto_tipo == "Sin foto")
 
-        # La deducción es de la noticia ACTIVA (foto/textual/dato/número son por noticia):
-        # aplicarla a todos los paneles pisaría el límite de las otras con recursos ajenos.
-        panel = self._active_story()
-        if panel is not None:
-            panel.set_external_deduction(total)
-        # El límite efectivo cambió → refrescar el tinte "hasta el límite".
-        self._aplicar_extra_selections()
+        return total
 
     def _aplicar_sin_foto_ui(self, sin_foto: bool):
         """'Sin foto' deshabilita el epígrafe de la noticia ACTIVA (la foto es por noticia)
@@ -1891,7 +1956,12 @@ class EditorNotaWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "No hay archivo de texto cargado.")
             return False
         sel_tx = self._textual_cards.selected_items()
-        if sel_tx and self._cb_textual_tipo.currentText() == "—":
+        es_especial = False
+        try:
+            es_especial = self.controller.es_seccion_textual(self._seccion)
+        except Exception:
+            pass
+        if sel_tx and not es_especial and self._cb_textual_tipo.currentText() == "—":
             resp = QMessageBox.question(
                 self, "Textual sin tipo",
                 f"Hay {len(sel_tx)} textual(es) seleccionado(s) pero no elegiste tipo.\n"

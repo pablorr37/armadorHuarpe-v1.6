@@ -394,13 +394,16 @@ function extractNoteData(esEspecial) {
       body += '\n\n' + uniqQr.map(function(u) { return 'Link para el QR: ' + u; }).join('\n');
     }
 
-    // Sección especial: los textuales son SÓLO los del bloque "Textuales" (no todos los
-    // blockquotes de la nota). Si no hay bloque "Textuales", queda vacío.
-    if (esEspecial) {
-      textualesAuto = textualesDeBloqueTextuales(tmp);
-    }
+    // textualesAuto: mecanismo GENERAL (un blockquote entero = una entrada), sirve para
+    // sugerir textuales estructurados en secciones normales -- no se toca.
+    // textualesEspeciales: mecanismo DEDICADO del bloque "Textuales" (un <p> = una
+    // entrada), exclusivo de las secciones especiales. Se calcula siempre (da [] si no
+    // hay bloque "Textuales") y NUNCA se mezcla con textualesAuto -- si se mezclaran (como
+    // antes, cuando esEspecial pisaba textualesAuto), un blockquote de OTRA parte del
+    // cuerpo podía colarse como textual espurio en el pegado de la sección especial.
+    var textualesEspeciales = textualesDeBloqueTextuales(tmp);
 
-    return { body: body, textualesAuto: textualesAuto };
+    return { body: body, textualesAuto: textualesAuto, textualesEspeciales: textualesEspeciales };
   }
 
   // Volanta
@@ -455,6 +458,7 @@ function extractNoteData(esEspecial) {
   // Cuerpo — desde CKEditor (lógica del scraper Selenium)
   var cuerpo = '';
   var textualesAuto = [];
+  var textualesEspeciales = [];
   var _ckeDoc = null;
   try {
     var ckeIframe = document.querySelector('#cke_textoHTML iframe');
@@ -464,6 +468,7 @@ function extractNoteData(esEspecial) {
         var cuerpoResult = htmlToCuerpo(_ckeDoc.body.innerHTML || '', esEspecial);
         cuerpo = cuerpoResult.body;
         textualesAuto = cuerpoResult.textualesAuto;
+        textualesEspeciales = cuerpoResult.textualesEspeciales;
       }
     }
   } catch (e) {}
@@ -553,8 +558,8 @@ function extractNoteData(esEspecial) {
 
   return { volanta: volanta, titulo: titulo, bajada: bajada, firma: firma,
            epigrafe: epigrafe, cuerpo: cuerpo, imagenes: imagenes,
-           textualesAuto: textualesAuto, estadoPub: estadoPub,
-           _qrDebug: _qrDebug };
+           textualesAuto: textualesAuto, textualesEspeciales: textualesEspeciales,
+           estadoPub: estadoPub, _qrDebug: _qrDebug };
 }
 
 // ── Handler del botón Descargar ──────────────────────────────
@@ -638,6 +643,7 @@ document.getElementById('descargarBtn').addEventListener('click', async function
       epigrafe: result.epigrafe,
       cuerpo: result.cuerpo,
       textuales_auto: result.textualesAuto || [],
+      textuales_especiales: result.textualesEspeciales || [],
       imagenes: result.imagenes.map(function(img, i) {
         return {
           archivo: (img.principal ? 'principal_' : '') + img.nombre + extractExt(img.url),

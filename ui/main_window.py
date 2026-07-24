@@ -2298,11 +2298,16 @@ class MainWindow(QMainWindow):
             self._al_abrir_qxp(numero)
 
 
-        # Si se abrió al menos un PDF, activar overlay lector de QR (no bloquea la UI)
+        # Si se abrió un QXP, arrancar el overlay de composición igual que "pegar en Quark"
+        # (antes solo pasaba con PDF: una página en estado "base" nunca lo tenía). Si se
+        # abrió un PDF, mantiene el overlay liviano de lectura QR de siempre.
         try:
-            if abrio_pdf:
+            if any(a.suffix.lower() == ".qxp" for a in archivos):
+                subfolder = self._subfolder_activo()
+                _comp = self.controller.composicion_pagina(numero, subfolder)
+                self.qr_overlay = start_overlay(comp=_comp, pag_num=numero, auto_info=True)
+            elif abrio_pdf:
                 self._activate_qr_mode()
-
         except Exception as e:
             _log.warning(f"[QR] No se pudo iniciar overlay: {e}")
 
@@ -2425,7 +2430,8 @@ class MainWindow(QMainWindow):
 
     def _on_nota_guardada_para_armar(self, numero: int):
         # Trabajo MANUAL: listo_para_armar=true; excluye 'armado automático'.
-        self._on_nota_editada(numero)
+        # (nota_guardada ya disparó _on_nota_editada — no repetirlo acá, o "Editó con
+        # el editor" queda duplicado en el historial de la página.)
         pag = self.controller.gestor_paginas.obtener_pagina(numero)
         if pag:
             pag.listo_para_armar = True
@@ -2442,7 +2448,8 @@ class MainWindow(QMainWindow):
 
     def _on_nota_guardada_para_armado_bot(self, numero: int):
         # Trabajo AUTOMÁTICO: armado_bot=true; excluye el 'listo para armar' manual.
-        self._on_nota_editada(numero)
+        # (nota_guardada ya disparó _on_nota_editada — no repetirlo acá, ver comentario
+        # equivalente en _on_nota_guardada_para_armar.)
         pag = self.controller.gestor_paginas.obtener_pagina(numero)
         if pag:
             pag.armado_bot = True
