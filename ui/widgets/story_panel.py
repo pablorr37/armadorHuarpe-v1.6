@@ -190,6 +190,7 @@ class StoryPanel(QWidget):
     body_display_changed = pyqtSignal(dict)  # ajustes de visualización del cuerpo
     ia_config_needed = pyqtSignal()        # falta API key → abrir configuración de IA
     ia_busy_changed = pyqtSignal(bool)     # True mientras corre una reescritura por IA
+    ia_highlight_changed = pyqtSignal(str)  # campo cuyo highlight IA persistente cambió (solo "cuerpo" por ahora)
 
     def __init__(self, story_index: int, mq: dict, parent=None):
         super().__init__(parent)
@@ -210,6 +211,7 @@ class StoryPanel(QWidget):
         self._ia_suppress_clear: bool = False       # no limpiar highlight en set programático
         self._ia_btn: dict[str, QPushButton] = {}
         self._ia_undo_btn: dict[str, QPushButton] = {}
+        self._ia_extra_sels: dict[str, list] = {}   # campo → extra-selections amarillas persistentes
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -803,7 +805,7 @@ class StoryPanel(QWidget):
         self.textChanged.emit()
 
     def _set_ia_highlight(self, campo: str, original: str) -> None:
-        from ui.widgets.ia_diff import diff_ranges, apply_text_edit_highlight
+        from ui.widgets.ia_diff import diff_ranges, build_highlight_selections, apply_text_edit_highlight
         if campo == "titulo":
             self.title_grid.set_ia_highlight(original)
         elif campo == "epigrafe":
@@ -812,7 +814,15 @@ class StoryPanel(QWidget):
             widget = self._get_campo_widget(campo)
             if widget is not None:
                 nuevo = self._get_campo_text(campo)
-                apply_text_edit_highlight(widget, diff_ranges(original, nuevo))
+                if campo == "cuerpo":
+                    # ed_cuerpo tiene otro escritor de extraSelections (tinte de
+                    # límite/recursos/fragmentos en editor_nota_window): aplicar
+                    # directo acá se pisaría en el próximo refresco de esa
+                    # compositor. Se guarda y se pide al editor que lo sume.
+                    self._ia_extra_sels[campo] = build_highlight_selections(widget, diff_ranges(original, nuevo))
+                    self.ia_highlight_changed.emit(campo)
+                else:
+                    apply_text_edit_highlight(widget, diff_ranges(original, nuevo))
 
     def _clear_ia_highlight(self, campo: str) -> None:
         from ui.widgets.ia_diff import clear_text_edit_highlight
@@ -820,10 +830,19 @@ class StoryPanel(QWidget):
             self.title_grid.clear_ia_highlight()
         elif campo == "epigrafe":
             self._ia_epigrafe_badge.setVisible(False)
+        elif campo == "cuerpo":
+            self._ia_extra_sels.pop(campo, None)
+            self.ia_highlight_changed.emit(campo)
         else:
             widget = self._get_campo_widget(campo)
             if widget is not None:
                 clear_text_edit_highlight(widget)
+
+    def ia_extra_selections(self, campo: str) -> list:
+        """Extra-selections amarillas persistentes de un campo (vacío si no
+        tiene reescritura de IA activa). Usado por el compositor de
+        extraSelections del editor padre para no pisar el highlight."""
+        return list(self._ia_extra_sels.get(campo, []))
 
     def _maybe_clear_ia(self, campo: str) -> None:
         """Al editar a mano un campo reescrito, quita el resaltado y el botón deshacer."""

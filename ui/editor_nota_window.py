@@ -1239,6 +1239,7 @@ class EditorNotaWindow(QMainWindow):
         # no es parte de "recursos por noticia" y evita rehacer el corrector por pestaña.
         panel.ed_bajada.textChanged.connect(lambda p=panel: self._on_bajada_changed(p))
         panel.ed_cuerpo.textChanged.connect(lambda p=panel: self._on_cuerpo_changed(p))
+        panel.ia_highlight_changed.connect(lambda campo, p=panel: self._on_ia_highlight_changed(campo, p))
         # "Contar caracteres" en vivo: al arrastrar la selección, recalcular el conteo.
         panel.ed_cuerpo.selectionChanged.connect(lambda p=panel: self._on_frag_live_changed(p))
 
@@ -2908,15 +2909,21 @@ class EditorNotaWindow(QMainWindow):
             sels.append(s2)
         return sels
 
+    def _on_ia_highlight_changed(self, campo: str, panel: "StoryPanel") -> None:
+        if campo == "cuerpo" and panel is self._active_story():
+            self._aplicar_extra_selections()
+
     def _aplicar_extra_selections(self):
-        """Compone: tinte de límite (fondo) + highlight celeste de recursos + naranja de fragmentos."""
+        """Compone: tinte de límite (fondo) + highlight celeste de recursos +
+        amarillo de IA + naranja de fragmentos."""
         if not self._stories:
             return
         panel = self._active_story()
         editor = panel.ed_cuerpo
         recursos = list(getattr(self, "_resource_extra_sels", []) or [])
+        ia = panel.ia_extra_selections("cuerpo")
         editor.setExtraSelections(
-            self._limit_paint_extra_selections(panel) + recursos + self._frag_extra_selections(editor))
+            self._limit_paint_extra_selections(panel) + recursos + ia + self._frag_extra_selections(editor))
 
     # ------------------------------------------------------------------
     # Corrección: acciones globales

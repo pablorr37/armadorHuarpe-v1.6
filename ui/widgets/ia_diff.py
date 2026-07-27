@@ -31,11 +31,14 @@ def diff_ranges(original: str, nuevo: str) -> list[tuple[int, int]]:
     return rangos
 
 
-def apply_text_edit_highlight(widget, ranges: list[tuple[int, int]]) -> None:
-    """Aplica extra-selections amarillas a un QTextEdit/QPlainTextEdit.
-    Convive con el QSyntaxHighlighter de ortografía (se superponen)."""
+def build_highlight_selections(widget, ranges: list[tuple[int, int]]) -> list:
+    """Arma (sin aplicar) las extra-selections amarillas para un
+    QTextEdit/QPlainTextEdit. No llama setExtraSelections: quien la use debe
+    fusionar el resultado con cualquier otra capa de highlighting existente
+    sobre el mismo widget (límite, recursos, fragmentos), en vez de
+    sobrescribirla directo."""
     if not isinstance(widget, (QTextEdit, QPlainTextEdit)):
-        return
+        return []
     fmt = QTextCharFormat()
     fmt.setBackground(IA_HIGHLIGHT_COLOR)
     doc = widget.document()
@@ -53,7 +56,16 @@ def apply_text_edit_highlight(widget, ranges: list[tuple[int, int]]) -> None:
         cur.setPosition(end, QTextCursor.KeepAnchor)
         sel.cursor = cur
         selections.append(sel)
-    widget.setExtraSelections(selections)
+    return selections
+
+
+def apply_text_edit_highlight(widget, ranges: list[tuple[int, int]]) -> None:
+    """Aplica extra-selections amarillas directo sobre el widget (overwrite).
+    Solo apta para widgets que no compongan otras capas de highlighting
+    encima; ver build_highlight_selections() para el caso general."""
+    if not isinstance(widget, (QTextEdit, QPlainTextEdit)):
+        return
+    widget.setExtraSelections(build_highlight_selections(widget, ranges))
 
 
 def clear_text_edit_highlight(widget) -> None:

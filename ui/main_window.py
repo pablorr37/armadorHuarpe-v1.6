@@ -1138,6 +1138,9 @@ class MainWindow(QMainWindow):
         action_leer_maquetas = QAction("Leer maquetas (capacidades)…", self)
         action_leer_maquetas.triggered.connect(self.abrir_lector_maquetas)
         menu_maquetas.addAction(action_leer_maquetas)
+        action_editor_maquetas = QAction("Editor de maquetas (visual)…", self)
+        action_editor_maquetas.triggered.connect(self.abrir_editor_maquetas)
+        menu_maquetas.addAction(action_editor_maquetas)
 
         menu_config = menubar.addMenu("Configuración")
 
@@ -7333,6 +7336,15 @@ class MainWindow(QMainWindow):
         from ui.maquetas_reader_dialog import MaquetasReaderDialog
         dlg = MaquetasReaderDialog(self)
         dlg.exec_()
+
+    def abrir_editor_maquetas(self):
+        """Editor visual del maquetador (F3+F4): arrastrar/redimensionar/clonar
+        recursos sobre un lienzo a escala. No modal — trabaja 100% en memoria/
+        JSON, no toca Quark."""
+        from ui.maquetador_window import MaquetadorWindow
+        win = MaquetadorWindow(self)
+        win.show()
+        self._maquetador_win = win  # evita que el GC la cierre
 
     def _abrir_config_secciones(self):
         dlg = SeccionesConfigDialog(self)
