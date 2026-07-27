@@ -27,12 +27,22 @@ _log = get_logger(__name__)
 # sin necesidad de tener Quark abierto.
 CACHE_PATH = Config.RUNTIME_SCRIPTS_DIR / "maquetas_cache.json"
 
+# Override editable de fuente por clase de estilo, para clases que NUNCA aparecen
+# con --qx-font-size inline en ninguna maqueta (p.ej. títulos, volantas de breve).
+ESTILOS_FUENTE_PATH = Config.SCRIPTS_DIR / "estilos_fuente.json"
+
 # 1 punto tipográfico = 1/72 pulgada = 0.3527777… mm
 PT_TO_MM = 25.4 / 72.0
 # Inset de texto por defecto de Quark (1 pt a cada lado ≈ 0.353 mm)
 DEFAULT_INSET_MM = 1.0
-# Factor de calibración por defecto (justificación/partición/espacios).
-DEFAULT_FACTOR = 0.98
+# Factor de calibración por defecto (justificación/partición/espacios/kerning,
+# que la fórmula geométrica no modela explícitamente). Derivado con
+# calibrar_factor() contra los placeholders reales de 45 maquetas de producción
+# (excluyendo "escracheAlBache", maqueta especial con geometría atípica):
+# mediana 1.286, media 1.268, desvío 0.064 — la fórmula geométrica cruda
+# (factor=1) subestima la capacidad real en ~27%. Re-derivar si se agregan
+# muchas maquetas nuevas: ver services.maqueta_introspect.calibrar_factor().
+DEFAULT_FACTOR = 1.28
 
 
 def leer_maqueta_cdp(puerto: int = quark_cdp.PUERTO_DEFAULT,
@@ -125,19 +135,152 @@ def estimar_capacidad(
     return int(chars_por_linea * lineas * factor)
 
 
+def _normalizar_clase(cls: str | None) -> str:
+    """Normaliza una clase de estilo de párrafo/carácter de Quark para usarla como
+    clave: unquote (%20→espacio), arregla mojibake latin1→utf8, quita el prefijo
+    pr-/ch-, sin acentos, minúsculas. 'pr-C-%20TEXTO' → 'c- texto'."""
+    if not cls:
+        return ""
+    import re
+    import unicodedata
+    import urllib.parse
+    s = urllib.parse.unquote(cls)
+    try:
+        s = s.encode("latin-1").decode("utf-8")
+    except Exception:
+        pass
+    s = re.sub(r"^(pr-|ch-)", "", s)
+    s = unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode()
+    return s.lower().strip()
+
+
+def _cargar_override_fuentes() -> dict:
+    """Override editable {clase_norm: {font_size, font_family, leading}} para
+    clases que nunca aparecen con fuente inline en ninguna maqueta cacheada."""
+    try:
+        if ESTILOS_FUENTE_PATH.exists():
+            data = json.loads(ESTILOS_FUENTE_PATH.read_text(encoding="utf-8"))
+            return {k: v for k, v in data.items() if not k.startswith("_")}
+    except Exception as e:
+        _log.warning("_cargar_override_fuentes: no se pudo leer %s (%s)", ESTILOS_FUENTE_PATH, e)
+    return {}
+
+
+# Clases GENÉRICAS de Quark ("Normal", "No Style"...) se reusan para roles muy
+# distintos entre sí — no son un predictor confiable de fuente por sí solas.
+_CLASES_GENERICAS = frozenset({"normal", "no style", "no%20style", ""})
+
+# Umbrales de confianza para aceptar un valor aprendido por clase: al menos esta
+# cantidad de muestras Y que el valor más común concentre al menos esta fracción
+# (si una clase trae fuentes muy dispersas —ej. 7/9/14/72pt— no hay un valor único
+# confiable y es preferible dejarla sin resolver que devolver una capacidad falsa).
+_MIN_MUESTRAS = 3
+_MIN_ACUERDO = 0.5
+
+
+def _aprender_fuentes_por_clase(cache: dict | None = None) -> dict[str, dict]:
+    """{clase_norm: {font_size, font_family, leading}} agregado (moda, con umbral
+    de confianza) de todas las cajas con fuente inline conocida, en TODA la caché
+    de maquetas ya leídas. Permite resolver la fuente de cajas vacías (sin
+    placeholder) que solo llevan la clase de estilo, cruzando con otra maqueta
+    donde esa clase sí tenía texto. Clases genéricas o con muestras muy dispersas
+    quedan sin resolver (mejor caer al default que devolver un valor inventado)."""
+    from collections import Counter, defaultdict
+
+    cache = leer_cache() if cache is None else cache
+    agg: dict[str, dict[str, Counter]] = defaultdict(
+        lambda: {"font_size": Counter(), "font_family": Counter(), "leading": Counter()}
+    )
+    for entry in cache.values():
+        for b in (entry.get("data") or {}).get("boxes", []):
+            if b.get("type") != "text":
+                continue
+            cl = _normalizar_clase(b.get("style_class"))
+            if not cl or cl in _CLASES_GENERICAS:
+                continue
+            if b.get("font_size"):
+                agg[cl]["font_size"][b["font_size"]] += 1
+            if b.get("font_family"):
+                agg[cl]["font_family"][b["font_family"]] += 1
+            if b.get("leading"):
+                agg[cl]["leading"][b["leading"]] += 1
+
+    def _moda_confiable(c: "Counter"):
+        total = sum(c.values())
+        if total < _MIN_MUESTRAS:
+            return None
+        valor, n = c.most_common(1)[0]
+        if (n / total) < _MIN_ACUERDO:
+            return None
+        return valor
+
+    result: dict[str, dict] = {}
+    for cl, counters in agg.items():
+        result[cl] = {k: _moda_confiable(c) for k, c in counters.items()}
+    return result
+
+
+def _resolver_estilo_caja(b: dict, aprendidos: dict, override: dict) -> tuple:
+    """(font_size, font_family, leading) de una caja, completando por clase de
+    estilo (override manual primero, luego lo auto-aprendido) cuando la caja no
+    trae el dato inline (caja vacía, sin placeholder)."""
+    fs, fam, ld = b.get("font_size"), b.get("font_family"), b.get("leading")
+    if fs and fam:
+        return fs, fam, ld
+    cl = _normalizar_clase(b.get("style_class"))
+    ov = override.get(cl) or {}
+    ap = aprendidos.get(cl) or {}
+    fs = fs or ov.get("font_size") or ap.get("font_size")
+    fam = fam or ov.get("font_family") or ap.get("font_family")
+    ld = ld or ov.get("leading") or ap.get("leading")
+    return fs, fam, ld
+
+
 def capacidades_por_caja(data: dict, factor: float = DEFAULT_FACTOR) -> dict[str, int]:
-    """{box-name: capacidad_estimada} para las cajas de texto con fuente conocida."""
+    """{box-name: capacidad_estimada} para las cajas de texto con fuente resuelta
+    (inline, o completada por clase de estilo vía override/aprendizaje agregado)."""
+    aprendidos = _aprender_fuentes_por_clase()
+    override = _cargar_override_fuentes()
     result: dict[str, int] = {}
     for b in (data or {}).get("boxes", []):
         if b.get("type") != "text":
             continue
-        cap = estimar_capacidad(
-            b.get("width_mm"), b.get("height_mm"), b.get("font_size"),
-            b.get("font_family"), b.get("leading"), factor=factor,
-        )
+        fs, fam, ld = _resolver_estilo_caja(b, aprendidos, override)
+        cap = estimar_capacidad(b.get("width_mm"), b.get("height_mm"), fs, fam, ld, factor=factor)
         if cap > 0:
             result[b["name"]] = cap
     return result
+
+
+def recalcular_capacidades_cache() -> int:
+    """Segunda pasada: recalcula 'capacidades'/'empty' de TODAS las entradas ya
+    cacheadas usando el aprendizaje agregado COMPLETO (incluye clases aprendidas
+    de maquetas leídas después). Se llama al final de leer_todas_las_maquetas().
+    Devuelve la cantidad de entradas actualizadas."""
+    cache = leer_cache()
+    if not cache:
+        return 0
+    aprendidos = _aprender_fuentes_por_clase(cache)
+    override = _cargar_override_fuentes()
+    for stem, entry in cache.items():
+        data = entry.get("data") or {}
+        caps: dict[str, int] = {}
+        for b in data.get("boxes", []):
+            if b.get("type") != "text":
+                continue
+            fs, fam, ld = _resolver_estilo_caja(b, aprendidos, override)
+            cap = estimar_capacidad(b.get("width_mm"), b.get("height_mm"), fs, fam, ld)
+            if cap > 0:
+                caps[b["name"]] = cap
+        entry["capacidades"] = caps
+        entry["canvas"] = _resolver_canvas(data)
+    try:
+        CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        _log.warning("recalcular_capacidades_cache: no se pudo escribir %s (%s)", CACHE_PATH, e)
+        return 0
+    _log.info("recalcular_capacidades_cache: %d maquetas actualizadas.", len(cache))
+    return len(cache)
 
 
 def probar_escritura_geometria(puerto: int = quark_cdp.PUERTO_DEFAULT,
@@ -161,14 +304,14 @@ def calibrar_factor(data: dict) -> float | None:
     """Deriva un factor de calibración comparando la capacidad geométrica (factor=1)
     contra los chars reales de las cajas que tienen placeholder. Devuelve el
     promedio de (chars_reales / capacidad_geométrica), o None si no hay muestras."""
+    aprendidos = _aprender_fuentes_por_clase()
+    override = _cargar_override_fuentes()
     ratios = []
     for b in (data or {}).get("boxes", []):
         if b.get("type") != "text" or not b.get("chars"):
             continue
-        cap = estimar_capacidad(
-            b.get("width_mm"), b.get("height_mm"), b.get("font_size"),
-            b.get("font_family"), b.get("leading"), factor=1.0,
-        )
+        fs, fam, ld = _resolver_estilo_caja(b, aprendidos, override)
+        cap = estimar_capacidad(b.get("width_mm"), b.get("height_mm"), fs, fam, ld, factor=1.0)
         if cap > 0:
             ratios.append(b["chars"] / cap)
     if not ratios:
@@ -179,6 +322,31 @@ def calibrar_factor(data: dict) -> float | None:
 # ==================================================================
 # Caché de maquetas (trabajo previo) — el editor la consume sin Quark
 # ==================================================================
+
+def _resolver_canvas(data: dict) -> dict:
+    """Tamaño de lienzo: usa el que trajo el JS si es completo; si no, lo deriva
+    por BOUNDING BOX de las cajas que están realmente en página (no parqueadas en
+    el pasteboard — page sin sufijo '*'), como aproximación (puede incluir sangría)."""
+    canvas = (data or {}).get("canvas") or {}
+    if canvas.get("width_mm") and canvas.get("height_mm"):
+        return canvas
+
+    max_right, max_bottom = None, None
+    for b in (data or {}).get("boxes", []):
+        page = b.get("page") or ""
+        if "*" in page:   # pasteboard (parqueado), no cuenta para el lienzo
+            continue
+        r, bo = b.get("right_mm"), b.get("bottom_mm")
+        if r is not None and (max_right is None or r > max_right):
+            max_right = r
+        if bo is not None and (max_bottom is None or bo > max_bottom):
+            max_bottom = bo
+    return {
+        "width_mm": max_right,
+        "height_mm": max_bottom,
+        "aproximado": True,
+    } if (max_right or max_bottom) else canvas
+
 
 def _es_vacia(data: dict) -> bool:
     """True si la maqueta tiene lienzo pero ninguna caja de texto con fuente
@@ -207,7 +375,7 @@ def guardar_cache_maqueta(stem: str, data: dict) -> None:
     cache[stem] = {
         "data": data,
         "capacidades": capacidades_por_caja(data),
-        "canvas": (data or {}).get("canvas"),
+        "canvas": _resolver_canvas(data),
         "empty": _es_vacia(data),
         "source": (data or {}).get("source"),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -267,7 +435,13 @@ def actualizar_maqueta_abierta(puerto: int = quark_cdp.PUERTO_DEFAULT) -> dict |
     if not stem:
         return {"ok": False, "error": "No se pudo determinar el nombre de la maqueta activa."}
     guardar_cache_maqueta(stem, data)
-    return {"ok": True, "stem": stem, "capacidades": capacidades_por_caja(data),
+    # Esta maqueta puede aportar clases nuevas al aprendizaje agregado: refrescar
+    # las demás entradas de la caché para que se beneficien también.
+    try:
+        recalcular_capacidades_cache()
+    except Exception as e:
+        _log.warning("actualizar_maqueta_abierta: recalculo agregado falló (%s)", e)
+    return {"ok": True, "stem": stem, "capacidades": capacidades_cache(stem),
             "empty": _es_vacia(data)}
 
 
@@ -340,6 +514,14 @@ def leer_todas_las_maquetas(progress=None, cancel=None,
         finally:
             _cerrar_proyecto_cdp(puerto)
             time.sleep(0.5)
+
+    # Segunda pasada: recalcula capacidades con el aprendizaje agregado COMPLETO
+    # (una maqueta leída al principio puede beneficiarse de clases aprendidas
+    # recién en una maqueta leída después).
+    try:
+        recalcular_capacidades_cache()
+    except Exception as e:
+        _log.warning("leer_todas_las_maquetas: recalculo final falló (%s)", e)
 
     if progress:
         progress(total, total, "")

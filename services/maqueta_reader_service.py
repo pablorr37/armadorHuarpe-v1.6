@@ -276,16 +276,23 @@ def map_to_editor_limits(info: dict, seccion: str) -> dict:
     defaults = cfg.get("default_limits", {})
     result: dict = {}
 
+    # Cada rol se resuelve de forma INDEPENDIENTE contra las variantes: si la caja
+    # de volanta de ninguna variante tiene capacidad conocida, igual se usa el
+    # cuerpo de la primera variante cuya caja de cuerpo SÍ la tenga (antes se
+    # descartaba todo el cuerpo si la volanta de esa misma variante fallaba).
     for v in variantes:
         vname = v.get("volanta", "")
-        cname = v.get("cuerpo", "")
-        if vname in box_chars:
+        if vname and vname in box_chars:
             result["volanta_limit"] = box_chars[vname]
-            if cname and cname in box_chars:
-                result["cuerpo_limit"] = box_chars[cname]
             break
     if "volanta_limit" not in result and "volanta_limit" in defaults:
         result["volanta_limit"] = defaults["volanta_limit"]
+
+    for v in variantes:
+        cname = v.get("cuerpo", "")
+        if cname and cname in box_chars:
+            result["cuerpo_limit"] = box_chars[cname]
+            break
 
     epi = cfg.get("epigrafe", "")
     if epi and epi in box_chars:
@@ -301,6 +308,45 @@ def map_to_editor_limits(info: dict, seccion: str) -> dict:
 
     result["picture_count"] = info.get("picture_count", 0)
     return result
+
+
+def roles_reverse_map() -> dict[str, str]:
+    """box_name → rol editorial, agregando 'variantes'/'epigrafe'/'textuales'/
+    'story_scenarios' de TODAS las secciones de maqueta_roles.json. Es una
+    referencia de SOLO LECTURA (no se modifica ni reemplaza a maqueta_roles.json
+    ni a su consumidor JS) usada para clasificar cajas en el manifest semántico
+    del maquetador (services/maqueta_manifest.py). Si un box-name aparece en más
+    de una sección con roles distintos, gana la primera vez que se lo ve."""
+    try:
+        roles = json.loads(_ROLES_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    rev: dict[str, str] = {}
+
+    def _agregar_pagina(pagina: dict) -> None:
+        for rol, box in pagina.items():
+            if box:
+                rev.setdefault(box, rol)
+
+    for seccion, cfg in roles.items():
+        if seccion.startswith("_") or not isinstance(cfg, dict):
+            continue
+        for v in cfg.get("variantes", []):
+            _agregar_pagina(v)
+        epi = cfg.get("epigrafe")
+        if epi:
+            rev.setdefault(epi, "epigrafe")
+        for box in cfg.get("textuales", []):
+            rev.setdefault(box, "textual")
+        for slots in cfg.get("story_scenarios", {}).values():
+            for slot in slots:
+                for p in slot.get("pages", []):
+                    _agregar_pagina(p)
+                for tcfg in (slot.get("story_types") or {}).values():
+                    for p in tcfg.get("pages", []):
+                        _agregar_pagina(p)
+    return rev
 
 
 def limits_from_cache(maqueta: str, seccion: str) -> dict:

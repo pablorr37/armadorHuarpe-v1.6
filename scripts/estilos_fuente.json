@@ -1,0 +1,4 @@
+{
+  "_comentario": "Override MANUAL de fuente por clase de estilo de párrafo/carácter de Quark, para clases que NUNCA aparecen con --qx-font-size inline en ninguna maqueta cacheada (cajas siempre vacías de ese estilo, p.ej. títulos o volantas de breve). La clave es la clase NORMALIZADA (unquote + sin prefijo pr-/ch- + sin acentos + minúsculas), ej. 'pr-A-%20VOLANTA' -> 'a- volanta'. Se completa a mano viendo Editor > Hojas de estilo en Quark. El auto-aprendizaje (services/maqueta_introspect._aprender_fuentes_por_clase) tiene prioridad cuando encuentra una muestra real; este archivo solo cubre los huecos.",
+  "_formato": "{ \"clase_norm\": {\"font_size\": pt, \"font_family\": \"Nombre\", \"leading\": pt (opcional)} }"
+}
