@@ -788,6 +788,24 @@ class EditorNotaWindow(QMainWindow):
         act_display = QAction("Visualización...", self)
         act_display.triggered.connect(self._open_display_config)
         m_config.addAction(act_display)
+        act_leer_mq = QAction("Leer maqueta desde Quark (capacidades)…", self)
+        act_leer_mq.triggered.connect(self._on_leer_maqueta_cdp)
+        m_config.addAction(act_leer_mq)
+
+        # Menú IA
+        m_ia = mb.addMenu("IA")
+        act_ia_cfg = QAction("Configurar IA…", self)
+        act_ia_cfg.triggered.connect(self._on_configurar_ia)
+        m_ia.addAction(act_ia_cfg)
+        self._act_ia_auto = QAction("Reescritura automática al guardar", self)
+        self._act_ia_auto.setCheckable(True)
+        try:
+            from config.config import config_global as _cg
+            self._act_ia_auto.setChecked(_cg.ia_auto_enabled)
+        except Exception:
+            pass
+        self._act_ia_auto.toggled.connect(self._on_toggle_ia_auto)
+        m_ia.addAction(self._act_ia_auto)
 
         # Central
         central = QWidget()
@@ -851,7 +869,20 @@ class EditorNotaWindow(QMainWindow):
         self._btn_guardar_bot.setCursor(Qt.PointingHandCursor)
         self._btn_guardar_bot.setProperty("primary", True)
         self._btn_guardar_bot.setProperty("compact", True)
+        self._btn_ia_todo = QPushButton("✨ Reescribir todo")
+        self._btn_ia_todo.setCursor(Qt.PointingHandCursor)
+        self._btn_ia_todo.setProperty("compact", True)
+        self._btn_ia_todo.setToolTip(
+            "Reescribir con IA toda la noticia activa respetando los límites de cada campo"
+        )
+        self._btn_ia_todo.setStyleSheet(
+            "QPushButton { color: #f5c542; background: rgba(245,197,66,0.12);"
+            " border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; padding: 4px 10px; }"
+            " QPushButton:hover { background: #f5c542; color: #1a2535; }"
+            " QPushButton:disabled { color: rgba(245,197,66,0.35); }"
+        )
         btn_row.addStretch(1)
+        btn_row.addWidget(self._btn_ia_todo)
         btn_row.addWidget(self._btn_guardar)
         btn_row.addWidget(self._btn_guardar_armar)
         btn_row.addWidget(self._btn_guardar_bot)
@@ -1157,6 +1188,7 @@ class EditorNotaWindow(QMainWindow):
         self._btn_guardar.clicked.connect(self._on_guardar)
         self._btn_guardar_armar.clicked.connect(self._on_guardar_para_armar)
         self._btn_guardar_bot.clicked.connect(self._on_guardar_para_armado_bot)
+        self._btn_ia_todo.clicked.connect(self._on_reescribir_todo)
         self._cb_maqueta.activated[str].connect(self._on_maqueta_changed)
         self._btn_swap.clicked.connect(self._on_swap)
         self._sb_noticias.valueChanged.connect(self._on_story_count_changed)
@@ -1198,6 +1230,8 @@ class EditorNotaWindow(QMainWindow):
         self._story_tabs.addTab(panel, label)
         self._stories.append(panel)
         panel.body_display_changed.connect(self._on_body_display_changed)
+        panel.ia_config_needed.connect(self._on_configurar_ia)
+        panel.ia_busy_changed.connect(self._on_ia_busy_changed)
         # La rueda dentro del cuerpo también gobierna el colapso del bloque superior.
         panel.ed_cuerpo.viewport().installEventFilter(self)
 
@@ -1955,6 +1989,15 @@ class EditorNotaWindow(QMainWindow):
         if not panels:
             QMessageBox.warning(self, "Error", "No hay archivo de texto cargado.")
             return False
+
+        # Reescritura automática por IA al guardar (si está activada). Corre antes de
+        # persistir; siempre preserva el original de cada campo (ver StoryPanel).
+        try:
+            from config.config import config_global as _cg
+            if _cg.ia_auto_enabled:
+                self._ia_full_rewrite(panels, auto=True)
+        except Exception as e:
+            _log.warning("[EDITOR] IA auto al guardar falló: %s", e)
         sel_tx = self._textual_cards.selected_items()
         es_especial = False
         try:
@@ -2019,6 +2062,140 @@ class EditorNotaWindow(QMainWindow):
         if self._do_save():
             self.nota_guardada_para_armado_bot.emit(self.numero)
             self.close()
+
+    # ------------------------------------------------------------------
+    # Reescritura por IA — configuración, botón "Reescribir todo", auto
+    # ------------------------------------------------------------------
+
+    def _on_configurar_ia(self):
+        from ui.ia_config_dialog import IAConfigDialog
+        dlg = IAConfigDialog(self)
+        if dlg.exec_():
+            try:
+                from config.config import config_global as _cg
+                self._act_ia_auto.blockSignals(True)
+                self._act_ia_auto.setChecked(_cg.ia_auto_enabled)
+                self._act_ia_auto.blockSignals(False)
+            except Exception:
+                pass
+
+    def _on_toggle_ia_auto(self, checked: bool):
+        try:
+            from config.config import config_global as _cg
+            _cg.save_ia_auto_enabled(bool(checked))
+        except Exception as e:
+            _log.warning("[EDITOR] no se pudo guardar ia_auto_enabled: %s", e)
+
+    def _on_ia_busy_changed(self, busy: bool):
+        try:
+            self._btn_ia_todo.setEnabled(not busy)
+        except Exception:
+            pass
+
+    def _on_reescribir_todo(self):
+        """Reescribe con IA la noticia activa (pestaña actual)."""
+        panel = self._story_tabs.currentWidget()
+        if panel is None:
+            return
+        if not panel.has_content():
+            QMessageBox.information(self, "IA", "La noticia no tiene contenido para reescribir.")
+            return
+        self._ia_full_rewrite([panel], auto=False)
+
+    def _ia_full_rewrite(self, panels: list, auto: bool = False) -> bool:
+        """Reescribe la nota completa de cada panel con contenido, con diálogo de
+        progreso cancelable. Corre la llamada en un worker (no congela la UI).
+        Preserva el original y resalta el diff (lo hace StoryPanel.apply_ia_full)."""
+        from PyQt5.QtWidgets import QProgressDialog
+        from PyQt5.QtCore import QEventLoop
+        try:
+            from services.ia_service import AIRewriter
+            rewriter = AIRewriter()
+        except Exception as e:
+            if not auto:
+                self._on_ia_config_error_dialog(e)
+            else:
+                _log.warning("[EDITOR] IA auto: sin API key (%s)", e)
+            return False
+
+        targets = [p for p in panels if p.has_content()]
+        if not targets:
+            return True
+
+        from ui.ia_worker import IAWorker
+        dlg = QProgressDialog("Reescribiendo con IA…", "Cancelar", 0, len(targets), self)
+        dlg.setWindowTitle("IA")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        estado = {"cancel": False}
+        dlg.canceled.connect(lambda: estado.__setitem__("cancel", True))
+
+        for i, panel in enumerate(targets):
+            if estado["cancel"]:
+                break
+            dlg.setValue(i)
+            datos, limites = panel.ia_datos_y_limites()
+            if not datos:
+                continue
+            caja: dict = {}
+            loop = QEventLoop()
+            worker = IAWorker(rewriter.reescribir_nota_completa, datos, limites, parent=self)
+            worker.done.connect(lambda r, b=caja, lp=loop: (b.update({"r": r}), lp.quit()))
+            worker.failed.connect(lambda m, b=caja, lp=loop: (b.update({"e": m}), lp.quit()))
+            worker.start()
+            loop.exec_()
+            if "r" in caja and isinstance(caja["r"], dict):
+                panel.apply_ia_full(caja["r"])
+            elif "e" in caja and not auto:
+                QMessageBox.warning(self, "Error IA", caja["e"])
+        dlg.setValue(len(targets))
+        return True
+
+    def _on_ia_config_error_dialog(self, err: Exception):
+        resp = QMessageBox.question(
+            self, "IA no configurada",
+            f"{err}\n\n¿Querés configurar la API key de OpenAI ahora?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if resp == QMessageBox.Yes:
+            self._on_configurar_ia()
+
+    def _on_leer_maqueta_cdp(self):
+        """Lee la maqueta abierta en Quark por CDP y muestra las capacidades
+        estimadas por caja (geometría mm + fuente, sin rellenar)."""
+        try:
+            from services import maqueta_introspect as mi
+        except Exception as e:
+            QMessageBox.warning(self, "Maqueta", f"No se pudo cargar el lector: {e}")
+            return
+        data = mi.leer_maqueta_cdp()
+        if not data:
+            QMessageBox.warning(
+                self, "Maqueta",
+                "No se pudo leer la maqueta. ¿Está QuarkXPress abierto con la maqueta "
+                "y el canal CDP (puerto 8087) disponible?",
+            )
+            return
+        caps = mi.capacidades_por_caja(data)
+        factor = mi.calibrar_factor(data)
+        boxes = data.get("boxes", [])
+        n_text = sum(1 for b in boxes if b.get("type") == "text")
+        n_pic = sum(1 for b in boxes if b.get("type") == "picture")
+        canvas = data.get("canvas") or {}
+        lineas = [
+            f"Fuente: {data.get('source') or '(desconocida)'}",
+            f"Lienzo: {canvas.get('width_mm')} × {canvas.get('height_mm')} mm",
+            f"Cajas: {n_text} de texto, {n_pic} de foto.",
+        ]
+        if factor:
+            lineas.append(f"Factor de calibración sugerido: {factor:.3f}")
+        lineas.append("")
+        lineas.append("Capacidad estimada por caja (chars):")
+        for nombre, cap in sorted(caps.items()):
+            lineas.append(f"  • {nombre}: {cap}")
+        if not caps:
+            lineas.append("  (sin cajas de texto con fuente legible)")
+        QMessageBox.information(self, "Maqueta leída desde Quark", "\n".join(lineas))
 
     def _actualizar_nota_json(self, txt_path: Path, panel: "StoryPanel", maqueta: str):
         """Actualiza el JSON de la nota con los campos del editor y la maqueta seleccionada."""
@@ -2100,6 +2277,8 @@ class EditorNotaWindow(QMainWindow):
             "numero": numero,
             "qr_path": str(self._qr_path) if self._qr_path else None,
             "foto_tipo": self._cb_foto_tipo.currentText(),
+            # Texto original previo a la reescritura por IA (para deshacer/resaltar al reabrir)
+            "ia_original": dict(getattr(panel, "_ia_original", {}) or {}),
             # Marca de nota editada por el usuario: el chrome_watcher NO debe sobrescribir
             # una nota con editado=true (si no, se perdería la config al re-bajar/re-empujar).
             "editado": True,

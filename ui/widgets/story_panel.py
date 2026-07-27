@@ -5,7 +5,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QObject, QEvent, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QTextEdit,
-    QComboBox, QCheckBox, QDialog, QDialogButtonBox, QPushButton,
+    QComboBox, QCheckBox, QDialog, QDialogButtonBox, QPushButton, QMessageBox,
 )
 from PyQt5.QtGui import QFont
 
@@ -188,6 +188,8 @@ class StoryPanel(QWidget):
     textChanged = pyqtSignal()
     story_type_changed = pyqtSignal(str)   # emitido cuando el usuario cambia el tipo
     body_display_changed = pyqtSignal(dict)  # ajustes de visualización del cuerpo
+    ia_config_needed = pyqtSignal()        # falta API key → abrir configuración de IA
+    ia_busy_changed = pyqtSignal(bool)     # True mientras corre una reescritura por IA
 
     def __init__(self, story_index: int, mq: dict, parent=None):
         super().__init__(parent)
@@ -201,6 +203,13 @@ class StoryPanel(QWidget):
         # #7 — cada intertítulo (línea que empieza con ##) ocupa ~1 línea extra.
         self._intertitulo_deduccion: int = mq.get("intertitulo_deduccion", 35)
         self._story_type: str = ""
+
+        # ── Estado de reescritura por IA ──
+        self._ia_workers: list = []                 # workers vivos (evita GC)
+        self._ia_original: dict[str, str] = {}      # campo → texto previo a la IA
+        self._ia_suppress_clear: bool = False       # no limpiar highlight en set programático
+        self._ia_btn: dict[str, QPushButton] = {}
+        self._ia_undo_btn: dict[str, QPushButton] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -221,7 +230,10 @@ class StoryPanel(QWidget):
         self.ed_volanta.setFixedHeight(60)
         self.ed_volanta.setPlaceholderText("Volanta...")
         self.cnt_volanta = CharCounter(mq.get("volanta_limit", 90), 50, self.ed_volanta)
-        self._block_volanta = FieldBlock("Volanta", _wrap(self.ed_volanta, self.cnt_volanta))
+        self._block_volanta = FieldBlock(
+            "Volanta", _wrap(self.ed_volanta, self.cnt_volanta),
+            header_widgets=self._make_ia_buttons("volanta"),
+        )
         lay.addWidget(self._block_volanta)
 
         # ── Título ──
@@ -258,6 +270,8 @@ class StoryPanel(QWidget):
         )
         self._titulo_lbl.setProperty("fieldTitle", True)
         titulo_hdr_lay.addWidget(self._titulo_lbl)
+        for _b in self._make_ia_buttons("titulo"):
+            titulo_hdr_lay.addWidget(_b)
         titulo_hdr_lay.addStretch(1)
 
         titulo_section = QWidget()
@@ -275,7 +289,10 @@ class StoryPanel(QWidget):
         self.ed_bajada.setFixedHeight(80)
         self.ed_bajada.setPlaceholderText("Bajada...")
         self.cnt_bajada = CharCounter(mq.get("bajada_limit", 220), 50, self.ed_bajada)
-        self._block_bajada = FieldBlock("Bajada", _wrap(self.ed_bajada, self.cnt_bajada))
+        self._block_bajada = FieldBlock(
+            "Bajada", _wrap(self.ed_bajada, self.cnt_bajada),
+            header_widgets=self._make_ia_buttons("bajada"),
+        )
         lay.addWidget(self._block_bajada)
 
         # ── Firma ──
@@ -296,7 +313,17 @@ class StoryPanel(QWidget):
         self.ed_epigrafe = QLineEdit()
         self.ed_epigrafe.setPlaceholderText("Epígrafe de la foto principal...")
         self.cnt_epigrafe = CharCounter(mq.get("epigrafe_principal_limit", 120), 50, self.ed_epigrafe)
-        self._block_epigrafe = FieldBlock("Epígrafe", _wrap(self.ed_epigrafe, self.cnt_epigrafe))
+        # QLineEdit no permite resaltar sub-rangos → badge de campo completo.
+        self._ia_epigrafe_badge = QLabel("✨ reescrito por IA")
+        self._ia_epigrafe_badge.setVisible(False)
+        self._ia_epigrafe_badge.setStyleSheet(
+            "color: #7a6a00; background: rgba(255,220,0,0.28);"
+            " border-radius: 6px; padding: 1px 6px; font-size: 10px; font-weight: 600;"
+        )
+        self._block_epigrafe = FieldBlock(
+            "Epígrafe", _wrap(self.ed_epigrafe, self.cnt_epigrafe),
+            header_widgets=[*self._make_ia_buttons("epigrafe"), self._ia_epigrafe_badge],
+        )
         # El epígrafe va FUERA del bloque colapsable: debe seguir visible cuando el
         # colapso oculta volanta/título/bajada/firma (pantallas chicas, 1366×768).
         outer.addWidget(self._block_epigrafe)
@@ -320,6 +347,8 @@ class StoryPanel(QWidget):
         lbl_cuerpo = QLabel("Cuerpo")
         lbl_cuerpo.setProperty("fieldTitle", True)
         cuerpo_hdr.addWidget(lbl_cuerpo)
+        for _b in self._make_ia_buttons("cuerpo"):
+            cuerpo_hdr.addWidget(_b)
         cuerpo_hdr.addStretch(1)
         btn_expand = QPushButton("⊞")
         btn_expand.setFixedSize(56, 28)   # ⊞ más ancho (antes 28×28 quedaba angosto)
@@ -451,6 +480,7 @@ class StoryPanel(QWidget):
     # ── Slot handlers ──
 
     def _on_volanta_changed(self):
+        self._maybe_clear_ia("volanta")
         self.cnt_volanta.update_count(self.ed_volanta.toPlainText())
         self.textChanged.emit()
 
@@ -467,18 +497,22 @@ class StoryPanel(QWidget):
         self._titulo_over = any(_n(l) > cols for l in lines[:self.title_grid.rows])
         self.cnt_titulo.setText("\n".join(parts))
         self._refresh_titulo_counter()
+        self._maybe_clear_ia("titulo")
         self.textChanged.emit()
 
     def _on_bajada_changed(self):
+        self._maybe_clear_ia("bajada")
         self.cnt_bajada.update_count(self.ed_bajada.toPlainText())
         self._update_cuerpo_counter()
         self.textChanged.emit()
 
     def _on_epigrafe_changed(self):
+        self._maybe_clear_ia("epigrafe")
         self.cnt_epigrafe.update_count(self.ed_epigrafe.text())
         self.textChanged.emit()
 
     def _on_cuerpo_changed(self):
+        self._maybe_clear_ia("cuerpo")
         self._update_cuerpo_counter()
         self.textChanged.emit()
 
@@ -596,6 +630,278 @@ class StoryPanel(QWidget):
             self._story_type = new_type
             self.story_type_changed.emit(new_type)
 
+    # ==================================================================
+    # Reescritura por IA (por campo) + preservación del original + diff
+    # ==================================================================
+
+    _IA_BTN_QSS = (
+        "QPushButton { font-size: 13px; color: #f5c542;"
+        " background: rgba(245,197,66,0.12);"
+        " border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; }"
+        " QPushButton:hover { background: #f5c542; color: #1a2535; }"
+        " QPushButton:disabled { color: rgba(245,197,66,0.35);"
+        " border-color: rgba(245,197,66,0.15); }"
+    )
+    _IA_UNDO_QSS = (
+        "QPushButton { font-size: 13px; color: #e2e8f0;"
+        " background: rgba(255,255,255,0.08);"
+        " border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; }"
+        " QPushButton:hover { background: #e7885f; color: #ffffff; }"
+    )
+
+    def _make_ia_buttons(self, campo: str) -> list:
+        """Crea (y registra) el botón ✨ (reescribir) y ↩ (deshacer IA) de un campo."""
+        btn = QPushButton("✨")
+        btn.setFixedSize(30, 26)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(f"Reescribir {campo} con IA")
+        btn.setStyleSheet(self._IA_BTN_QSS)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.clicked.connect(lambda _=False, c=campo: self._reescribir_campo_ia(c))
+        self._ia_btn[campo] = btn
+
+        undo = QPushButton("↩")
+        undo.setFixedSize(28, 26)
+        undo.setCursor(Qt.PointingHandCursor)
+        undo.setToolTip("Deshacer reescritura de IA (volver al original)")
+        undo.setStyleSheet(self._IA_UNDO_QSS)
+        undo.setFocusPolicy(Qt.NoFocus)
+        undo.setVisible(False)
+        undo.clicked.connect(lambda _=False, c=campo: self._deshacer_ia(c))
+        self._ia_undo_btn[campo] = undo
+        return [btn, undo]
+
+    # ── mapeo campo → widget/texto/límite ──
+
+    def _get_campo_text(self, campo: str) -> str:
+        return {
+            "volanta":  self.ed_volanta.toPlainText(),
+            "titulo":   self.title_grid.text(),
+            "bajada":   self.ed_bajada.toPlainText(),
+            "epigrafe": self.ed_epigrafe.text(),
+            "cuerpo":   self.ed_cuerpo.toPlainText(),
+        }.get(campo, "")
+
+    def _set_campo_text(self, campo: str, txt: str) -> None:
+        if campo == "volanta":
+            self.ed_volanta.setPlainText(txt)
+        elif campo == "titulo":
+            self.title_grid.set_text(txt)
+        elif campo == "bajada":
+            self.ed_bajada.setPlainText(txt)
+        elif campo == "epigrafe":
+            self.ed_epigrafe.setText(txt)
+            self.ed_epigrafe.setCursorPosition(0)
+        elif campo == "cuerpo":
+            self.ed_cuerpo.setPlainText(_normalizar_cuerpo(txt))
+            self._apply_body_display()
+
+    def _get_campo_widget(self, campo: str):
+        return {
+            "volanta":  self.ed_volanta,
+            "bajada":   self.ed_bajada,
+            "cuerpo":   self.ed_cuerpo,
+        }.get(campo)
+
+    def _get_campo_limite(self, campo: str) -> int:
+        if campo == "volanta":
+            return self.cnt_volanta._limit
+        if campo == "bajada":
+            return self.cnt_bajada._limit
+        if campo == "epigrafe":
+            return self.cnt_epigrafe._limit
+        if campo == "cuerpo":
+            return self.limite_efectivo_cuerpo()
+        if campo == "titulo":
+            return self.title_grid.cols * self.title_grid.rows
+        return 0
+
+    def _build_ia_context(self) -> str:
+        titulo = self.title_grid.text().strip()
+        cuerpo = self.ed_cuerpo.toPlainText().strip()
+        partes = []
+        if titulo:
+            partes.append(f"Título: {titulo}")
+        if cuerpo:
+            partes.append(f"Cuerpo: {cuerpo}")
+        return "\n\n".join(partes)
+
+    # ── ejecución de la reescritura ──
+
+    def _reescribir_campo_ia(self, campo: str) -> None:
+        texto = (self._get_campo_text(campo) or "").strip()
+        if not texto:
+            return
+        try:
+            from services.ia_service import AIRewriter
+            rewriter = AIRewriter()
+        except Exception as e:  # IAConfigError u otro
+            self._ia_config_error(e)
+            return
+
+        limite = self._get_campo_limite(campo)
+        contexto = self._build_ia_context() if campo != "cuerpo" else ""
+        original = self._get_campo_text(campo)
+
+        btn = self._ia_btn.get(campo)
+        if btn:
+            btn.setEnabled(False)
+            btn.setText("…")
+        self.ia_busy_changed.emit(True)
+
+        from ui.ia_worker import IAWorker
+        worker = IAWorker(rewriter.reescribir_campo, campo, texto, limite, contexto, parent=self)
+
+        def _ok(nuevo, c=campo, orig=original, w=worker):
+            self._aplicar_reescritura_campo(c, orig, nuevo)
+            self._ia_finish(c, w)
+
+        def _err(msg, c=campo, w=worker):
+            QMessageBox.warning(self, "Error IA", f"No se pudo reescribir {c}:\n{msg}")
+            self._ia_finish(c, w)
+
+        worker.done.connect(_ok)
+        worker.failed.connect(_err)
+        self._ia_workers.append(worker)
+        worker.start()
+
+    def _ia_finish(self, campo: str, worker) -> None:
+        btn = self._ia_btn.get(campo)
+        if btn:
+            btn.setEnabled(True)
+            btn.setText("✨")
+        try:
+            self._ia_workers.remove(worker)
+        except ValueError:
+            pass
+        self.ia_busy_changed.emit(bool(self._ia_workers))
+
+    def _ia_config_error(self, err: Exception) -> None:
+        resp = QMessageBox.question(
+            self, "IA no configurada",
+            f"{err}\n\n¿Querés configurar la API key de OpenAI ahora?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if resp == QMessageBox.Yes:
+            self.ia_config_needed.emit()
+
+    def _aplicar_reescritura_campo(self, campo: str, original: str, nuevo: str) -> None:
+        nuevo = (nuevo or "").strip()
+        if not nuevo or nuevo == original:
+            return
+        self._ia_original[campo] = original
+        self._ia_suppress_clear = True
+        try:
+            self._set_campo_text(campo, nuevo)
+        finally:
+            self._ia_suppress_clear = False
+        self._set_ia_highlight(campo, original)
+        undo = self._ia_undo_btn.get(campo)
+        if undo:
+            undo.setVisible(True)
+        self.textChanged.emit()
+
+    def _set_ia_highlight(self, campo: str, original: str) -> None:
+        from ui.widgets.ia_diff import diff_ranges, apply_text_edit_highlight
+        if campo == "titulo":
+            self.title_grid.set_ia_highlight(original)
+        elif campo == "epigrafe":
+            self._ia_epigrafe_badge.setVisible(True)
+        else:
+            widget = self._get_campo_widget(campo)
+            if widget is not None:
+                nuevo = self._get_campo_text(campo)
+                apply_text_edit_highlight(widget, diff_ranges(original, nuevo))
+
+    def _clear_ia_highlight(self, campo: str) -> None:
+        from ui.widgets.ia_diff import clear_text_edit_highlight
+        if campo == "titulo":
+            self.title_grid.clear_ia_highlight()
+        elif campo == "epigrafe":
+            self._ia_epigrafe_badge.setVisible(False)
+        else:
+            widget = self._get_campo_widget(campo)
+            if widget is not None:
+                clear_text_edit_highlight(widget)
+
+    def _maybe_clear_ia(self, campo: str) -> None:
+        """Al editar a mano un campo reescrito, quita el resaltado y el botón deshacer."""
+        if self._ia_suppress_clear:
+            return
+        if campo not in self._ia_original:
+            # Aún así, el título podría tener highlight residual sin original registrado.
+            if campo == "titulo" and self.title_grid.has_ia_highlight():
+                self.title_grid.clear_ia_highlight()
+            return
+        self._clear_ia_highlight(campo)
+        self._ia_original.pop(campo, None)
+        undo = self._ia_undo_btn.get(campo)
+        if undo:
+            undo.setVisible(False)
+
+    def _deshacer_ia(self, campo: str) -> None:
+        original = self._ia_original.get(campo)
+        if original is None:
+            return
+        self._ia_suppress_clear = True
+        try:
+            self._set_campo_text(campo, original)
+            self._clear_ia_highlight(campo)
+        finally:
+            self._ia_suppress_clear = False
+        self._ia_original.pop(campo, None)
+        undo = self._ia_undo_btn.get(campo)
+        if undo:
+            undo.setVisible(False)
+        self.textChanged.emit()
+
+    # ── API para la reescritura de la NOTA COMPLETA (usada por el editor) ──
+
+    def ia_datos_y_limites(self) -> tuple[dict, dict]:
+        """Devuelve (datos, limites) de los campos con contenido, para
+        reescribir_nota_completa()."""
+        datos, limites = {}, {}
+        for campo in ("volanta", "titulo", "bajada", "epigrafe", "cuerpo"):
+            txt = (self._get_campo_text(campo) or "").strip()
+            if not txt:
+                continue
+            # epígrafe/bajada ocultos por la maqueta no se reescriben
+            if campo == "epigrafe" and not self._block_epigrafe.isVisibleTo(self):
+                continue
+            if campo == "bajada" and not self._block_bajada.isVisibleTo(self):
+                continue
+            datos[campo] = txt
+            limites[campo] = self._get_campo_limite(campo)
+        return datos, limites
+
+    def apply_ia_full(self, result: dict) -> None:
+        """Aplica el resultado de reescribir_nota_completa() a todos los campos,
+        preservando el original y resaltando el diff en cada uno."""
+        for campo, nuevo in (result or {}).items():
+            original = self._get_campo_text(campo)
+            self._aplicar_reescritura_campo(campo, original, nuevo)
+
+    def has_content(self) -> bool:
+        return bool((self._get_campo_text("cuerpo") or "").strip()
+                    or (self.title_grid.text() or "").strip())
+
+    def restore_ia_state(self, ia_original: dict) -> None:
+        """Re-muestra el resaltado amarillo y el botón deshacer de los campos
+        reescritos por IA al reabrir la nota (compara original vs texto actual)."""
+        if not ia_original:
+            return
+        for campo, original in ia_original.items():
+            if campo not in ("volanta", "titulo", "bajada", "epigrafe", "cuerpo"):
+                continue
+            actual = self._get_campo_text(campo)
+            if not original or actual == original:
+                continue
+            self._ia_original[campo] = original
+            self._set_ia_highlight(campo, original)
+            undo = self._ia_undo_btn.get(campo)
+            if undo:
+                undo.setVisible(True)
+
     def load_from_dir(self, subdir: Path) -> bool:
         """Carga la nota desde el subdirectorio. JSON primero, TXT como fallback."""
         txt_files = [
@@ -624,6 +930,7 @@ class StoryPanel(QWidget):
                 self.ed_cuerpo.setPlainText(_normalizar_cuerpo(nota.get("cuerpo", "")))
                 self._apply_body_display()   # reaplica interlineado tras cargar texto
                 self._update_cuerpo_counter()
+                self.restore_ia_state(nota.get("ia_original") or {})
                 return True
             except Exception:
                 pass  # fallback a TXT

@@ -16,6 +16,7 @@ _CLR_TEXT_OVR  = QColor("#ff6b6b")
 # Caracteres 1..cols: normal. cols+1..cols+2 (34/35 con cols=33): amarillo, todavía
 # aceptable. cols+3 en adelante (36+): rojo, claramente excedido.
 _WARN_COLS = 2
+_CLR_IA_HL     = QColor(255, 220, 0, 70)   # amarillo IA (mismo criterio que ia_diff)
 _CLR_CURSOR    = QColor("#82b4ff")
 _CLR_FOCUS_BG  = QColor("#1e3450")
 _CLR_FOCUS_BDR = QColor("#82b4ff")
@@ -43,6 +44,7 @@ class TitleGridEditor(QWidget):
         self._undo_stack: list[tuple[str, int]] = []
         self._redo_stack: list[tuple[str, int]] = []
         self._dragging = False
+        self._ia_original: str | None = None   # texto previo a la reescritura por IA
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumHeight(rows * 65 + 20)
@@ -81,6 +83,19 @@ class TitleGridEditor(QWidget):
         self.updateGeometry()
         self.update()
         self.textChanged.emit()
+
+    def set_ia_highlight(self, original: str) -> None:
+        """Marca en amarillo las celdas que difieren de `original` (reescritura IA)."""
+        self._ia_original = original or ""
+        self.update()
+
+    def clear_ia_highlight(self) -> None:
+        if self._ia_original is not None:
+            self._ia_original = None
+            self.update()
+
+    def has_ia_highlight(self) -> bool:
+        return self._ia_original is not None
 
     def set_text(self, t: str) -> None:
         """Carga texto externamente; resetea historial de undo y selección."""
@@ -591,6 +606,20 @@ class TitleGridEditor(QWidget):
                     bg = _CLR_CELL
                 p.fillRect(x, y, int(cell_w), int(cell_h), bg)
                 p.drawRect(x, y, int(cell_w), int(cell_h))
+
+        # Resaltado IA: celdas cuyo carácter difiere del original reescrito
+        if self._ia_original is not None:
+            from ui.widgets.ia_diff import diff_ranges
+            for (a, b) in diff_ranges(self._ia_original, self._text):
+                for i in range(a, b):
+                    if i >= len(self._text) or self._text[i] == "\n":
+                        continue
+                    h_row, h_col = self._char_display_pos(i)
+                    if h_col >= total_cols:
+                        continue
+                    hx = int(padding + h_col * cell_w)
+                    hy = int(padding + h_row * cell_h)
+                    p.fillRect(hx, hy, int(cell_w), int(cell_h), _CLR_IA_HL)
 
         # Separadores entre filas
         pen_sep = QPen(_CLR_SEP)

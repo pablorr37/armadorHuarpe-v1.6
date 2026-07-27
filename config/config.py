@@ -41,9 +41,100 @@ class Config:
     def chrome_profile_dir(self):
         return self.config.get("MANAGER", "chrome_profile_dir", fallback=None)
 
+    # ----------------------------------------------------------
+    # API key de IA — guardada en el vault del SO (Windows Credential
+    # Manager vía keyring), NUNCA en texto plano en config.ini.
+    # ----------------------------------------------------------
+    KEYRING_SERVICE = "ArmadorHuarpe"
+    KEYRING_USER = "openai_api_key"
+
     @property
-    def openai_api_key(self):
-        return self.config.get("IA", "api_key", fallback="")
+    def openai_api_key(self) -> str:
+        """Devuelve la API key de OpenAI desde el vault del SO.
+        Migración transparente: si no hay valor en el vault pero sí en el
+        viejo [IA] api_key de config.ini, lo mueve al vault y lo borra del ini."""
+        try:
+            import keyring
+            key = keyring.get_password(self.KEYRING_SERVICE, self.KEYRING_USER)
+            if key:
+                return key
+        except Exception:
+            key = None
+
+        # Migración desde config.ini (una sola vez)
+        legacy = self.config.get("IA", "api_key", fallback="")
+        if legacy:
+            try:
+                import keyring
+                keyring.set_password(self.KEYRING_SERVICE, self.KEYRING_USER, legacy)
+                self._borrar_api_key_ini()
+                return legacy
+            except Exception:
+                # keyring no disponible: seguir sirviendo el valor legacy
+                return legacy
+        return ""
+
+    def save_openai_api_key(self, key: str) -> None:
+        """Guarda (o borra si viene vacía) la API key en el vault del SO."""
+        import keyring
+        key = (key or "").strip()
+        if key:
+            keyring.set_password(self.KEYRING_SERVICE, self.KEYRING_USER, key)
+        else:
+            try:
+                keyring.delete_password(self.KEYRING_SERVICE, self.KEYRING_USER)
+            except Exception:
+                pass
+        # Nunca dejar la key en texto plano en el ini
+        self._borrar_api_key_ini()
+
+    def _borrar_api_key_ini(self) -> None:
+        """Elimina la clave api_key de la sección [IA] de config.ini si existe."""
+        try:
+            cfg = configparser.ConfigParser()
+            cfg.read(self.CONFIG_FILE, encoding="utf-8")
+            if cfg.has_option("IA", "api_key"):
+                cfg.remove_option("IA", "api_key")
+                with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+                    cfg.write(f)
+            # Reflejar en la copia en memoria
+            if self.config.has_option("IA", "api_key"):
+                self.config.remove_option("IA", "api_key")
+        except Exception:
+            pass
+
+    @property
+    def ia_model(self) -> str:
+        """Modelo de OpenAI para la reescritura. Default gpt-4.1-mini."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        return cfg.get("IA", "model", fallback="gpt-4.1-mini").strip() or "gpt-4.1-mini"
+
+    def save_ia_model(self, model: str) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "IA" not in cfg:
+            cfg["IA"] = {}
+        cfg["IA"]["model"] = (model or "gpt-4.1-mini").strip()
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+    @property
+    def ia_auto_enabled(self) -> bool:
+        """Si True, la reescritura completa por IA corre automáticamente al
+        guardar/importar una nota."""
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        return cfg.getboolean("IA", "auto_enabled", fallback=False)
+
+    def save_ia_auto_enabled(self, enabled: bool) -> None:
+        cfg = configparser.ConfigParser()
+        cfg.read(self.CONFIG_FILE, encoding="utf-8")
+        if "IA" not in cfg:
+            cfg["IA"] = {}
+        cfg["IA"]["auto_enabled"] = "true" if enabled else "false"
+        with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
 
     @property
     def maqueta_config(self) -> dict:
