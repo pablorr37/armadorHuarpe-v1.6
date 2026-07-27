@@ -214,13 +214,25 @@ maqueta de prueba activa para no arriesgar una mutación no solicitada.
 - **F2 — Spike de escritura de geometría (base)** ✅: `scripts/MoverCajaMM_spike.js`
   confirma el mecanismo de mover una caja seleccionada; `AplicarModeloRecursos.js`
   lo generaliza a mover/redimensionar/clonar/eliminar/renombrar por lote.
-- **F3 — Visor read-only**: canvas `QGraphicsView`/`QGraphicsScene` en mm que
-  dibuja el manifest (una página/escenario a la vez); seleccionar un recurso
-  muestra su rol + capacidad. Reusar patrón de `ui/maqueta_widget.py`.
-- **F4 — Editor visual**: arrastrar/redimensionar recursos sobre el canvas,
-  pedir más instancias de un rol (clonado), marcar eliminación — construye la
-  lista de `RecursoObjetivo`/`eliminar_ids` que consume `calcular_diferencias`.
-  Recalcular límites de caracteres en vivo mientras se edita.
+- **F3+F4 — Editor visual (visor + edición)** ✅ jul 2026: `model/maquetador_state.py`
+  (`RecursoEditable`/`MaquetadorDocumento`, conserva el manifest original
+  íntegro para no perder `clonable_desde` del pasteboard), `services/maquetador_io.py`
+  (cargar desde `maquetas_cache.json`/lienzo en blanco, guardar en el pool),
+  `ui/maquetador/` (canvas `QGraphicsView`/`QGraphicsScene` EN MM — no píxeles,
+  el zoom es pura transformación de vista igual que `ZoomableGraphicsView` de
+  `ui/maqueta_widget.py` — + panel de roles anclable + panel de propiedades) y
+  `ui/maquetador_window.py`. Arrastrar/redimensionar/clonar/marcar-eliminar
+  recursos sobre el canvas; recalcula capacidad en vivo (`estimar_capacidad`,
+  sin reimplementar la fórmula); "Ver plan de cambios" corre
+  `calcular_diferencias` como preview de solo lectura. Trabaja 100% en
+  memoria/JSON — **no llama a Quark en ningún punto**, ni siquiera para aplicar
+  el plan (`aplicar_plan_recursos` queda deshabilitado en la UI, pendiente de
+  autorización explícita y de la validación en vivo de F1.5). Alcance de este
+  ciclo: solo geometría/cantidad de recursos y guardado en el pool — el
+  concepto de "noticia"/"aviso" (agrupación con asignación de contenido) y la
+  futura extensión de Chrome quedaron fuera, a definir en un ciclo posterior.
+  Tests headless en `tests/test_maquetador_state.py` (fixture de manifest, sin
+  depender de Quark ni de la caché real).
 - **F5 — Migración gradual de PegarNota_JSON.js** (fuera de alcance de este
   ciclo, alto riesgo): reemplazar `UNIVERSAL`/`AVISO_TARGETS`/rutinas por
   sección por el manifest único, sección por sección, con la producción
