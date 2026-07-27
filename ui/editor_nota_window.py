@@ -794,7 +794,7 @@ class EditorNotaWindow(QMainWindow):
         act_ia_cfg = QAction("Configurar IA…", self)
         act_ia_cfg.triggered.connect(self._on_configurar_ia)
         m_ia.addAction(act_ia_cfg)
-        self._act_ia_auto = QAction("Reescritura automática al guardar", self)
+        self._act_ia_auto = QAction("Reescritura automática al cargar", self)
         self._act_ia_auto.setCheckable(True)
         try:
             from config.config import config_global as _cg

@@ -69,12 +69,12 @@ class IAConfigDialog(QDialog):
 
         # Reescritura automática
         self.chk_auto = QCheckBox(
-            "Reescribir automáticamente toda la nota con IA al guardar/importar"
+            "Reescribir automáticamente toda la nota con IA al abrirla"
         )
         self.chk_auto.setChecked(config_global.ia_auto_enabled)
         lay.addWidget(self.chk_auto)
         aviso = QLabel(
-            "Con esta opción activada, cada nota se reescribe sola al guardarla. "
+            "Con esta opción activada, cada nota se reescribe sola al abrirla. "
             "Siempre se conserva el texto original (podés deshacer campo por campo)."
         )
         aviso.setWordWrap(True)

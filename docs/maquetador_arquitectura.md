@@ -26,14 +26,49 @@ un recurso, eliminar). Fuente, tamaño de letra y diseño gráfico quedan del la
 Quark; **Python solo asiste con cantidad de caracteres y con posición/tamaño/
 cantidad de recursos**.
 
-Los otros 4 primitivos SÍ están confirmados y en uso en producción:
+Los otros primitivos confirmados y en uso en producción:
 - **Eliminar**: `box.parentNode.removeChild(box)`.
-- **Renombrar**: `setAttribute('box-name', ...)`, envuelto en `app.undo`.
 - **Mover/redimensionar**: reescribir `--qx-left/top/right/bottom` en mm (o los
   setters `box.style.qxLeft` etc., patrón preferido — "pasa por el motor de
   estilo de Quark").
 - Los **grupos (Ctrl+G) no existen en el DOM** (plano) — mover un grupo requiere
   mover cada caja miembro por el mismo delta.
+
+## Renombrado de cajas: NO existe in-place (corrección jul 2026)
+
+Se creía que `setAttribute('box-name', ...)` sobre una caja cualquiera era un
+primitivo confirmado en producción (junto con eliminar y mover/redimensionar).
+**Es incorrecto.** Confirmado en vivo con `scripts/nombrador.js` (ejecución
+manual, diálogo real, caja suelta no agrupada): tipear un nombre nuevo y
+aceptar el diálogo **no cambiaba el nombre de la caja**.
+
+**Causa raíz:** comparando contra `crearCajaDesde` en `scripts/PegarNota v6.js:641-651`
+(que sí funciona), la diferencia es el momento en que se fija el nombre:
+
+```js
+// SÍ funciona — el nombre se fija ANTES de insertar el nodo en el árbol:
+var nueva = orig.cloneNode(true);
+nueva.setAttribute("box-name", nuevoNombre);
+...
+destino.appendChild(nueva);
+
+// NO funciona — la caja ya está insertada, mutar el atributo después no se
+// propaga al modelo interno de Quark:
+box.setAttribute('box-name', nombre);   // box ya existía en el documento
+```
+
+**Quark solo "registra" el `box-name` en el instante de `appendChild`.** Por
+eso NO hay primitivo de renombrado in-place. Renombrar una caja EXISTENTE se
+implementa como **clonar-con-el-nombre-nuevo (en la misma posición/página) +
+eliminar el original** — reusa únicamente los primitivos que sí funcionan.
+Implementado en `scripts/AplicarModeloRecursos.js` (función interna
+`clonarConNombre`, compartida por las operaciones `clonar` y `renombrar`) y en
+`scripts/nombrador.js` (uso manual, un nombre por caja si hay selección
+múltiple).
+
+El flujo del maquetador (`model/recurso_plan.py::calcular_diferencias` →
+operación `clonar` para recursos nuevos) ya seguía el patrón correcto (fija el
+nombre antes de insertar) — no necesitó cambios.
 
 ## El problema de las "claves" (resuelto para el nuevo modelo — F1.5)
 
@@ -157,9 +192,10 @@ permiten acotar el manifest a UN escenario concreto antes de planificar sobre é
   `scripts/AplicarModeloRecursos.js` por CDP.
 
 `scripts/AplicarModeloRecursos.js` — aplica la lista de operaciones (mover,
-redimensionar, clonar, eliminar, renombrar) envueltas en UN solo
-`app.undo.beginCompoundUndo`/`endCompoundUndo` (deshacer revierte todo de una).
-**No toca** `PegarNota_JSON.js` ni el pegado de texto — subsistema aislado.
+redimensionar, clonar, eliminar, renombrar — este último vía clonar-con-nombre-
+nuevo + eliminar el original, ver sección de renombrado arriba) envueltas en UN
+solo `app.undo.beginCompoundUndo`/`endCompoundUndo` (deshacer revierte todo de
+una). **No toca** `PegarNota_JSON.js` ni el pegado de texto — subsistema aislado.
 
 **Pendiente de validar en vivo**: correr un plan real contra una maqueta de
 prueba abierta en Quark y confirmar antes/después (mover una foto, redimensionarla,
