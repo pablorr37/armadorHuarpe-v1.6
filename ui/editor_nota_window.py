@@ -788,9 +788,6 @@ class EditorNotaWindow(QMainWindow):
         act_display = QAction("Visualización...", self)
         act_display.triggered.connect(self._open_display_config)
         m_config.addAction(act_display)
-        act_leer_mq = QAction("Leer maqueta desde Quark (capacidades)…", self)
-        act_leer_mq.triggered.connect(self._on_leer_maqueta_cdp)
-        m_config.addAction(act_leer_mq)
 
         # Menú IA
         m_ia = mb.addMenu("IA")
@@ -1700,6 +1697,7 @@ class EditorNotaWindow(QMainWindow):
         maqueta_actual = self._cb_maqueta.currentText()
         if maqueta_actual:
             self._mq.update(config_global.maqueta_config_for(maqueta_actual))
+            self._merge_cache_limits(maqueta_actual)
             self._apply_new_limits()
 
         # Fotos del primer subdirectorio
@@ -1722,6 +1720,21 @@ class EditorNotaWindow(QMainWindow):
             )
 
         QTimer.singleShot(200, self._auto_detect)
+        # Reescritura automática por IA AL ABRIR la nota (si el toggle está activo).
+        # Diferida para que la ventana ya esté visible; solo sobre noticias no reescritas.
+        QTimer.singleShot(350, self._ia_auto_on_load)
+
+    def _ia_auto_on_load(self):
+        try:
+            from config.config import config_global as _cg
+            if not _cg.ia_auto_enabled:
+                return
+        except Exception:
+            return
+        # restore_ia_state ya pobló _ia_original en las notas ya reescritas → no repetir.
+        targets = [p for p in self._stories if p.has_content() and not p._ia_original]
+        if targets:
+            self._ia_full_rewrite(targets, auto=True)
 
     def _show_no_content(self):
         QMessageBox.warning(
@@ -1989,15 +2002,6 @@ class EditorNotaWindow(QMainWindow):
         if not panels:
             QMessageBox.warning(self, "Error", "No hay archivo de texto cargado.")
             return False
-
-        # Reescritura automática por IA al guardar (si está activada). Corre antes de
-        # persistir; siempre preserva el original de cada campo (ver StoryPanel).
-        try:
-            from config.config import config_global as _cg
-            if _cg.ia_auto_enabled:
-                self._ia_full_rewrite(panels, auto=True)
-        except Exception as e:
-            _log.warning("[EDITOR] IA auto al guardar falló: %s", e)
         sel_tx = self._textual_cards.selected_items()
         es_especial = False
         try:
@@ -2159,43 +2163,6 @@ class EditorNotaWindow(QMainWindow):
         )
         if resp == QMessageBox.Yes:
             self._on_configurar_ia()
-
-    def _on_leer_maqueta_cdp(self):
-        """Lee la maqueta abierta en Quark por CDP y muestra las capacidades
-        estimadas por caja (geometría mm + fuente, sin rellenar)."""
-        try:
-            from services import maqueta_introspect as mi
-        except Exception as e:
-            QMessageBox.warning(self, "Maqueta", f"No se pudo cargar el lector: {e}")
-            return
-        data = mi.leer_maqueta_cdp()
-        if not data:
-            QMessageBox.warning(
-                self, "Maqueta",
-                "No se pudo leer la maqueta. ¿Está QuarkXPress abierto con la maqueta "
-                "y el canal CDP (puerto 8087) disponible?",
-            )
-            return
-        caps = mi.capacidades_por_caja(data)
-        factor = mi.calibrar_factor(data)
-        boxes = data.get("boxes", [])
-        n_text = sum(1 for b in boxes if b.get("type") == "text")
-        n_pic = sum(1 for b in boxes if b.get("type") == "picture")
-        canvas = data.get("canvas") or {}
-        lineas = [
-            f"Fuente: {data.get('source') or '(desconocida)'}",
-            f"Lienzo: {canvas.get('width_mm')} × {canvas.get('height_mm')} mm",
-            f"Cajas: {n_text} de texto, {n_pic} de foto.",
-        ]
-        if factor:
-            lineas.append(f"Factor de calibración sugerido: {factor:.3f}")
-        lineas.append("")
-        lineas.append("Capacidad estimada por caja (chars):")
-        for nombre, cap in sorted(caps.items()):
-            lineas.append(f"  • {nombre}: {cap}")
-        if not caps:
-            lineas.append("  (sin cajas de texto con fuente legible)")
-        QMessageBox.information(self, "Maqueta leída desde Quark", "\n".join(lineas))
 
     def _actualizar_nota_json(self, txt_path: Path, panel: "StoryPanel", maqueta: str):
         """Actualiza el JSON de la nota con los campos del editor y la maqueta seleccionada."""
@@ -3163,7 +3130,24 @@ class EditorNotaWindow(QMainWindow):
         if not nombre:
             return
         self._mq.update(config_global.maqueta_config_for(nombre))
+        self._merge_cache_limits(nombre)
         self._apply_new_limits()
+
+    def _merge_cache_limits(self, maqueta: str) -> None:
+        """Aplica sobre self._mq los límites derivados de la CACHÉ de lectura de
+        maquetas (capacidades reales medidas por CDP). La lectura real es la fuente
+        preferida para volanta/cuerpo/epígrafe; el resto viene de config."""
+        try:
+            from services.maqueta_reader_service import limits_from_cache
+            cache_lim = limits_from_cache(maqueta, getattr(self, "_seccion", "") or "")
+            if cache_lim:
+                # picture_count no es un límite de campo; no ensuciar _mq con él.
+                cache_lim.pop("picture_count", None)
+                self._mq.update(cache_lim)
+                _log.info("[EDITOR] Límites de caché aplicados para '%s': %s",
+                          maqueta, sorted(cache_lim.keys()))
+        except Exception as e:
+            _log.debug("[EDITOR] _merge_cache_limits: %s", e)
 
     def refrescar_limites_maqueta(self):
         """Re-aplica los límites de la maqueta actual (p.ej. tras adoptar cambios de

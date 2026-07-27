@@ -41,9 +41,11 @@ _ROLES = {
         "de forma concisa y factual."
     ),
     "cuerpo": (
-        "CUERPO: el texto completo de la nota. Conservá la estructura de párrafos "
-        "y los intertítulos (líneas que empiezan con '## '). No agregues ni quites "
-        "secciones de contenido."
+        "CUERPO: el texto completo de la nota. REESCRIBÍ efectivamente la redacción "
+        "(mejorá claridad, ritmo y estilo periodístico) — no devuelvas el texto igual. "
+        "Conservá la estructura de párrafos y los intertítulos (líneas que empiezan con "
+        "'## '), todos los datos y las citas textuales. No agregues ni quites secciones "
+        "de contenido."
     ),
 }
 
@@ -159,49 +161,70 @@ class AIRewriter:
         if not presentes:
             return {}
 
-        lineas = ["Reescribí los campos de esta noticia. Devolvé un objeto JSON con "
-                  "exactamente estas claves y el texto reescrito de cada una:\n"]
-        for c, txt in presentes.items():
-            lim = limites.get(c)
-            cab = f"- {c} — {_ROLES.get(c, c)}"
-            if lim and lim > 0:
-                cab += f" (máx {int(lim)} caracteres)"
-            lineas.append(cab)
-        lineas.append("\nContenido actual de cada campo:")
-        lineas.append(json.dumps(presentes, ensure_ascii=False, indent=2))
-        lineas.append(
-            "\nRespondé ÚNICAMENTE con el JSON, con las mismas claves, "
-            "manteniendo coherencia entre volanta, título, bajada y cuerpo."
-        )
-        prompt = "\n".join(lineas)
-
-        try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.4,
-                response_format={"type": "json_object"},
-            )
-            raw = (resp.choices[0].message.content or "{}").strip()
-            data = json.loads(raw)
-        except Exception as e:  # noqa: BLE001
-            _log.error("Error IA reescribir_nota_completa: %s", e)
-            raise RuntimeError(f"Error al contactar la API: {e}")
-
-        # Normalizar: solo campos pedidos, string, y ajustar los que excedan.
         out: dict = {}
-        for c in presentes:
-            val = data.get(c)
-            if not isinstance(val, str) or not val.strip():
-                continue
-            val = _limpiar_envoltura(val.strip())
-            lim = limites.get(c)
-            if lim and lim > 0 and len(val) > lim:
-                val = self._acortar(c, val, lim)
-            out[c] = val
+
+        # El CUERPO se reescribe SIEMPRE con su propia llamada: dentro del JSON de la
+        # nota completa el modelo suele omitirlo o devolverlo casi igual (texto largo).
+        cuerpo_txt = presentes.pop("cuerpo", None)
+
+        # Campos cortos (volanta/título/bajada/epígrafe): una sola llamada JSON.
+        if presentes:
+            lineas = ["Reescribí los campos de esta noticia. Devolvé un objeto JSON con "
+                      "exactamente estas claves y el texto reescrito de cada una:\n"]
+            for c, _txt in presentes.items():
+                lim = limites.get(c)
+                cab = f"- {c} — {_ROLES.get(c, c)}"
+                if lim and lim > 0:
+                    cab += f" (máx {int(lim)} caracteres)"
+                lineas.append(cab)
+            lineas.append("\nContenido actual de cada campo:")
+            lineas.append(json.dumps(presentes, ensure_ascii=False, indent=2))
+            lineas.append(
+                "\nRespondé ÚNICAMENTE con el JSON, con las mismas claves, "
+                "manteniendo coherencia entre volanta, título, bajada y cuerpo."
+            )
+            prompt = "\n".join(lineas)
+            try:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.4,
+                    response_format={"type": "json_object"},
+                )
+                raw = (resp.choices[0].message.content or "{}").strip()
+                data = json.loads(raw)
+            except Exception as e:  # noqa: BLE001
+                _log.error("Error IA reescribir_nota_completa (campos cortos): %s", e)
+                raise RuntimeError(f"Error al contactar la API: {e}")
+
+            for c in presentes:
+                val = data.get(c)
+                if isinstance(val, str) and val.strip():
+                    val = _limpiar_envoltura(val.strip())
+                    lim = limites.get(c)
+                    if lim and lim > 0 and len(val) > lim:
+                        val = self._acortar(c, val, lim)
+                    out[c] = val
+                else:
+                    # Fallback: el JSON omitió este campo → reescribirlo individualmente.
+                    _log.info("IA nota completa: campo '%s' ausente en JSON → fallback individual.", c)
+                    indiv = self.reescribir_campo(c, presentes[c], limites.get(c),
+                                                  contexto=datos.get("titulo", ""))
+                    if indiv and indiv.strip():
+                        out[c] = indiv
+
+        # Cuerpo: llamada dedicada (fiable para texto largo).
+        if cuerpo_txt:
+            contexto = f"Título: {datos.get('titulo', '')}".strip()
+            cuerpo_nuevo = self.reescribir_campo("cuerpo", cuerpo_txt, limites.get("cuerpo"),
+                                                 contexto=contexto)
+            if cuerpo_nuevo and cuerpo_nuevo.strip():
+                out["cuerpo"] = cuerpo_nuevo
+
+        _log.info("IA nota completa: reescritos %s.", sorted(out.keys()))
         return out
 
     # ------------------------------------------------------------------

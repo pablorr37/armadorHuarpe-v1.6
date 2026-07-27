@@ -55,6 +55,21 @@
   var out = { ok: true, source: "", boxes: [], canvas: null, error: null };
   try {
     var layout = app.activeLayoutDOM();
+    if (!layout) {
+      // Fallback: intentar el layout del proyecto activo antes de rendirse.
+      try {
+        var proj = app.activeProject();
+        if (proj && proj.projectID >= 0 && proj.activeLayout) {
+          layout = (typeof proj.activeLayout.DOM === "function")
+                   ? proj.activeLayout.DOM() : null;
+        }
+      } catch (e) {}
+    }
+    if (!layout) {
+      out.ok = false;
+      out.error = "No hay una maqueta activa en QuarkXPress. Abrí la maqueta (.qxp) y dejala como documento activo.";
+      return out;
+    }
     try { out.source = app.activeProject().getLocation().sourceFilePath || ""; } catch (e) {}
     try { if (!out.source) out.source = app.activeDocument.name || ""; } catch (e) {}
 

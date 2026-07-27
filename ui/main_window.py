@@ -1133,6 +1133,12 @@ class MainWindow(QMainWindow):
         # ------------------------------------------------------------
         # NUEVO MENÚ CONFIGURACIÓN
         # ------------------------------------------------------------
+        # Menú Maquetas (herramienta de lectura de capacidades por CDP)
+        menu_maquetas = menubar.addMenu("Maquetas")
+        action_leer_maquetas = QAction("Leer maquetas (capacidades)…", self)
+        action_leer_maquetas.triggered.connect(self.abrir_lector_maquetas)
+        menu_maquetas.addAction(action_leer_maquetas)
+
         menu_config = menubar.addMenu("Configuración")
 
         # Atajos de teclado
@@ -7320,6 +7326,12 @@ class MainWindow(QMainWindow):
         """Abre el cuadro de configuración de atajos y recarga al guardar."""
         dlg = ShortcutConfigDialog(self)
         dlg.shortcuts_changed.connect(self.reload_shortcuts)
+        dlg.exec_()
+
+    def abrir_lector_maquetas(self):
+        """Herramienta de lectura de maquetas (capacidades por CDP → caché)."""
+        from ui.maquetas_reader_dialog import MaquetasReaderDialog
+        dlg = MaquetasReaderDialog(self)
         dlg.exec_()
 
     def _abrir_config_secciones(self):

@@ -245,9 +245,13 @@ def read_maqueta_info() -> dict | None:
 
 def map_to_editor_limits(info: dict, seccion: str) -> dict:
     """
-    Cruza maqueta_info.json con maqueta_roles.json para la sección dada.
+    Cruza la info de la maqueta con maqueta_roles.json para la sección dada.
     Devuelve dict compatible con maqueta_config más 'picture_count'.
-    Si no hay texto placeholder en una caja, ese límite no se incluye.
+
+    `info` puede venir de dos fuentes (se prioriza la primera disponible):
+      - 'box_capacidades': {box-name: capacidad_estimada} — lectura por CDP
+        (geometría + fuente, sin rellenar). Es la fuente REAL preferida.
+      - 'box_chars' / 'text_boxes': conteo de placeholder (LeerMaqueta.js, legado).
     """
     try:
         roles = json.loads(_ROLES_JSON.read_text(encoding="utf-8"))
@@ -258,13 +262,16 @@ def map_to_editor_limits(info: dict, seccion: str) -> dict:
     cfg = roles.get(seccion_norm) or roles.get("default") or {}
     variantes = cfg.get("variantes", [])
 
-    # Usar índice plano box_chars si disponible (generado por LeerMaqueta.js >= v2)
-    # Fallback: construir desde text_boxes filtrando chars > 0
-    box_chars: dict[str, int] = info.get("box_chars") or {
-        b["name"]: b["chars"]
-        for b in info.get("text_boxes", [])
-        if b.get("chars", 0) > 0
-    }
+    # Preferir capacidades reales (CDP); si no, box_chars; si no, text_boxes.
+    box_chars: dict[str, int] = (
+        info.get("box_capacidades")
+        or info.get("box_chars")
+        or {
+            b["name"]: b["chars"]
+            for b in info.get("text_boxes", [])
+            if b.get("chars", 0) > 0
+        }
+    )
 
     defaults = cfg.get("default_limits", {})
     result: dict = {}
@@ -294,6 +301,25 @@ def map_to_editor_limits(info: dict, seccion: str) -> dict:
 
     result["picture_count"] = info.get("picture_count", 0)
     return result
+
+
+def limits_from_cache(maqueta: str, seccion: str) -> dict:
+    """Límites de editor derivados de la CACHÉ de lectura de maquetas (capacidades
+    reales medidas por CDP+QFontMetrics). {} si la maqueta no está cacheada."""
+    try:
+        from services.maqueta_introspect import cache_maqueta
+    except Exception:
+        return {}
+    entry = cache_maqueta(maqueta)
+    if not entry:
+        return {}
+    caps = entry.get("capacidades") or {}
+    if not caps:
+        return {}
+    boxes = (entry.get("data") or {}).get("boxes", [])
+    picture_count = sum(1 for b in boxes if b.get("type") == "picture")
+    info = {"box_capacidades": caps, "picture_count": picture_count}
+    return map_to_editor_limits(info, seccion)
 
 
 def get_story_types(seccion: str, story_count: int, story_index: int) -> list[str]:

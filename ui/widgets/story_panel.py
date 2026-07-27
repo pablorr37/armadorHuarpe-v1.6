@@ -635,7 +635,8 @@ class StoryPanel(QWidget):
     # ==================================================================
 
     _IA_BTN_QSS = (
-        "QPushButton { font-size: 13px; color: #f5c542;"
+        "QPushButton { font-size: 12px; font-weight: 600; color: #f5c542;"
+        " padding: 2px 8px;"
         " background: rgba(245,197,66,0.12);"
         " border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; }"
         " QPushButton:hover { background: #f5c542; color: #1a2535; }"
@@ -651,8 +652,8 @@ class StoryPanel(QWidget):
 
     def _make_ia_buttons(self, campo: str) -> list:
         """Crea (y registra) el botón ✨ (reescribir) y ↩ (deshacer IA) de un campo."""
-        btn = QPushButton("✨")
-        btn.setFixedSize(30, 26)
+        btn = QPushButton("✨ IA")
+        btn.setMinimumSize(52, 28)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip(f"Reescribir {campo} con IA")
         btn.setStyleSheet(self._IA_BTN_QSS)
@@ -661,7 +662,7 @@ class StoryPanel(QWidget):
         self._ia_btn[campo] = btn
 
         undo = QPushButton("↩")
-        undo.setFixedSize(28, 26)
+        undo.setFixedSize(36, 28)
         undo.setCursor(Qt.PointingHandCursor)
         undo.setToolTip("Deshacer reescritura de IA (volver al original)")
         undo.setStyleSheet(self._IA_UNDO_QSS)
@@ -746,7 +747,7 @@ class StoryPanel(QWidget):
         btn = self._ia_btn.get(campo)
         if btn:
             btn.setEnabled(False)
-            btn.setText("…")
+            btn.setText("⏳")
         self.ia_busy_changed.emit(True)
 
         from ui.ia_worker import IAWorker
@@ -769,7 +770,7 @@ class StoryPanel(QWidget):
         btn = self._ia_btn.get(campo)
         if btn:
             btn.setEnabled(True)
-            btn.setText("✨")
+            btn.setText("✨ IA")
         try:
             self._ia_workers.remove(worker)
         except ValueError:
