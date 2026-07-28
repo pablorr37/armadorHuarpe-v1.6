@@ -14,7 +14,7 @@ from model.maquetador_state import RecursoEditable
 class PropiedadesPanelDock(QDockWidget):
     geometria_cambiada = pyqtSignal(str, float, float, float, float)  # id, left, top, width, height
     solicitud_clonar = pyqtSignal(str)             # id origen
-    solicitud_eliminar = pyqtSignal(str, bool)     # id, marcar/desmarcar
+    solicitud_eliminar = pyqtSignal(str)           # id — elimina directo, sin marcar/desmarcar
 
     def __init__(self, parent=None):
         super().__init__("Propiedades", parent)
@@ -45,8 +45,7 @@ class PropiedadesPanelDock(QDockWidget):
 
         botones = QHBoxLayout()
         self.btn_clonar = QPushButton("Clonar otra instancia")
-        self.btn_eliminar = QPushButton("Marcar para eliminar")
-        self.btn_eliminar.setCheckable(True)
+        self.btn_eliminar = QPushButton("Eliminar recurso")
         botones.addWidget(self.btn_clonar)
         botones.addWidget(self.btn_eliminar)
         lay.addLayout(botones)
@@ -57,7 +56,7 @@ class PropiedadesPanelDock(QDockWidget):
         for spin in (self.spin_left, self.spin_top, self.spin_width, self.spin_height):
             spin.valueChanged.connect(self._on_spin_changed)
         self.btn_clonar.clicked.connect(self._on_clonar)
-        self.btn_eliminar.toggled.connect(self._on_eliminar_toggled)
+        self.btn_eliminar.clicked.connect(self._on_eliminar_clicked)
 
         self._set_habilitado(False)
 
@@ -98,9 +97,6 @@ class PropiedadesPanelDock(QDockWidget):
             self.lbl_capacidad.setText(f"Capacidad estimada: {recurso.capacidad or 0} caracteres")
         else:
             self.lbl_capacidad.setText("Recurso de imagen")
-        self.btn_eliminar.blockSignals(True)
-        self.btn_eliminar.setChecked(recurso.marcado_eliminar)
-        self.btn_eliminar.blockSignals(False)
 
     def _on_spin_changed(self, _valor: float) -> None:
         if self._actualizando or self._recurso_id is None:
@@ -114,6 +110,6 @@ class PropiedadesPanelDock(QDockWidget):
         if self._recurso_id is not None:
             self.solicitud_clonar.emit(self._recurso_id)
 
-    def _on_eliminar_toggled(self, marcado: bool) -> None:
+    def _on_eliminar_clicked(self) -> None:
         if self._recurso_id is not None:
-            self.solicitud_eliminar.emit(self._recurso_id, marcado)
+            self.solicitud_eliminar.emit(self._recurso_id)

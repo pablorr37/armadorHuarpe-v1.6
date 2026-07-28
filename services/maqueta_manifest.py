@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from config.config import config_global
 from services.maqueta_reader_service import roles_reverse_map
+from services.maquetador_nomenclatura import parse_box_name
 from utils.app_logger import get_logger
 
 _log = get_logger(__name__)
@@ -79,9 +80,27 @@ def construir_manifest(data: dict, stem: str = "") -> dict:
             cap = estimar_capacidad(b.get("width_mm"), b.get("height_mm"), fs, fam, ld)
             capacidad = cap or None
         else:  # picture
-            rol = "foto_principal" if (foto_principal_box and name == foto_principal_box) else "foto_secundaria"
+            rol = "foto_principal" if (foto_principal_box and name == foto_principal_box) else None
 
-        if rol:
+        # Fallback (SOLO si maqueta_roles.json/foto_principal no resolvieron
+        # nada): convención rol_N / rol_N_campo de maquetas construidas desde
+        # cero con el maquetador — nunca reemplaza el mapeo estático de
+        # producción. Debe intentarse ANTES del default genérico
+        # "foto_secundaria" de abajo, o nunca se ejecutaría para imágenes.
+        info_parseada = None
+        if not rol:
+            info_parseada = parse_box_name(name)
+            if info_parseada:
+                rol = info_parseada["rol"]
+
+        if not rol and tipo == "picture":
+            rol = "foto_secundaria"
+
+        if info_parseada is not None:
+            # El propio box_name ya es único y determinístico — no hace
+            # falta el contador de rol del manifest.
+            rid = name
+        elif rol:
             n = contador_por_rol.get(rol, 0) + 1
             contador_por_rol[rol] = n
             rid = rol if n == 1 else f"{rol}_{n}"
@@ -104,6 +123,8 @@ def construir_manifest(data: dict, stem: str = "") -> dict:
             "rol": rol,
             "capacidad": capacidad,
             "clonable_desde": clonable_desde,
+            "grupo_id": (f"{rol}_{info_parseada['indice']}" if info_parseada and info_parseada["es_grupo"] else None),
+            "grupo_campo": (info_parseada["campo"] if info_parseada else None),
         })
 
     return {

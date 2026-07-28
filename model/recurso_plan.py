@@ -40,6 +40,7 @@ class RecursoObjetivo:
     width_mm: float
     height_mm: float
     page: str | None = None
+    box_name_deseado: str | None = None  # nombre determinístico (services.maquetador_nomenclatura), si aplica
 
 
 @dataclass
@@ -182,7 +183,7 @@ def calcular_diferencias(
                 "desde cero)."
             )
             continue
-        nuevo_nombre = _slugify_id(obj.id)
+        nuevo_nombre = obj.box_name_deseado or _slugify_id(obj.id)
         plan.operaciones.append(Operacion(
             tipo="clonar",
             origen_box=origen,

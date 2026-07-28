@@ -18,7 +18,7 @@ ROLES_POR_DEFECTO = [
     ("cuerpo", "Cuerpo"),
     ("epigrafe", "Epígrafe"),
     ("foto", "Foto"),
-    ("textuales", "Textuales"),
+    ("textual", "Textual"),
     ("dato", "Dato"),
     ("numero", "Número"),
     ("qr", "QR"),

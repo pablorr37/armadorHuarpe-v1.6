@@ -62,6 +62,13 @@ class Maqueta:
     origen: str = "dibujar"           # "prearmada" | "real" | "dibujar"
     source: Optional[str] = None      # ruta .qxp de origen (si es real)
     cajas: list[Caja] = field(default_factory=list)
+    # Márgenes de página (mm). Lectura best-effort por CDP, pendiente de
+    # validar en vivo (ver scripts/LeerMaquetaCDP.js) — 0.0 si Quark no
+    # expone el dato, editable a mano en el maquetador.
+    margin_top_mm: float = 0.0
+    margin_bottom_mm: float = 0.0
+    margin_left_mm: float = 0.0
+    margin_right_mm: float = 0.0
 
     # ── round-trip JSON ──
 
@@ -86,6 +93,10 @@ class Maqueta:
             canvas_height_mm=canvas.get("height_mm") or 0.0,
             origen="real",
             source=(data or {}).get("source"),
+            margin_top_mm=canvas.get("margin_top_mm") or 0.0,
+            margin_bottom_mm=canvas.get("margin_bottom_mm") or 0.0,
+            margin_left_mm=canvas.get("margin_left_mm") or 0.0,
+            margin_right_mm=canvas.get("margin_right_mm") or 0.0,
         )
         for b in (data or {}).get("boxes", []):
             caja = Caja(

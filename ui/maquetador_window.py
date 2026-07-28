@@ -8,9 +8,10 @@ ver docs/maquetador_arquitectura.md).
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction, QCheckBox, QDialog, QDoubleSpinBox, QFormLayout, QInputDialog,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout,
+    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QUndoStack, QVBoxLayout,
 )
 
 from model.maquetador_state import MaquetadorDocumento
@@ -18,6 +19,9 @@ from model.recurso_plan import calcular_diferencias
 from ui.maquetador.canvas_view import MaquetadorCanvasView
 from ui.maquetador.propiedades_panel import PropiedadesPanelDock
 from ui.maquetador.recursos_panel import RecursosPanelDock
+from ui.maquetador.undo_commands import (
+    ClonarCommand, ClonarGrupoCommand, EliminarCommand, MoverCommand, RedimensionarCommand,
+)
 from services import maquetador_io
 
 
@@ -27,6 +31,7 @@ class MaquetadorWindow(QMainWindow):
         self.setWindowTitle("Maquetador — editor visual")
         self.resize(1100, 750)
         self.doc: MaquetadorDocumento | None = None
+        self.undo_stack = QUndoStack(self)
 
         self.canvas = MaquetadorCanvasView(self)
         self.setCentralWidget(self.canvas)
@@ -42,7 +47,19 @@ class MaquetadorWindow(QMainWindow):
     # ── toolbar ──
 
     def _crear_toolbar(self) -> None:
+        act_undo = self.undo_stack.createUndoAction(self, "Deshacer")
+        act_undo.setShortcut(QKeySequence.Undo)
+        act_redo = self.undo_stack.createRedoAction(self, "Rehacer")
+        act_redo.setShortcut(QKeySequence.Redo)
+        menu_edicion = self.menuBar().addMenu("Edición")
+        menu_edicion.addAction(act_undo)
+        menu_edicion.addAction(act_redo)
+
         tb = self.addToolBar("Maquetador")
+        tb.addAction(act_undo)
+        tb.addAction(act_redo)
+        tb.addSeparator()
+
         act_abrir = QAction("Abrir desde caché…", self)
         act_abrir.triggered.connect(self._on_abrir_desde_cache)
         tb.addAction(act_abrir)
@@ -50,6 +67,10 @@ class MaquetadorWindow(QMainWindow):
         act_nueva = QAction("Nueva (lienzo en blanco)…", self)
         act_nueva.triggered.connect(self._on_nueva_en_blanco)
         tb.addAction(act_nueva)
+
+        act_margenes = QAction("Márgenes…", self)
+        act_margenes.triggered.connect(self._on_editar_margenes)
+        tb.addAction(act_margenes)
 
         tb.addSeparator()
 
@@ -71,12 +92,16 @@ class MaquetadorWindow(QMainWindow):
         self.canvas.signals.recurso_movido.connect(self._on_recurso_movido)
         self.canvas.signals.recurso_redimensionado.connect(self._on_recurso_redimensionado)
         self.canvas.signals.recurso_seleccionado.connect(self._on_recurso_seleccionado)
+        self.canvas.signals.recurso_movido_fin.connect(self._on_recurso_movido_fin)
+        self.canvas.signals.recurso_redimensionado_fin.connect(self._on_recurso_redimensionado_fin)
         self.canvas.solicitud_clonar.connect(self._on_solicitud_clonar)
+        self.canvas.solicitud_clonar_grupo.connect(self._on_solicitud_clonar_grupo)
+        self.canvas.solicitud_eliminar_seleccion.connect(self._on_eliminar)
 
         self.dock_recursos.solicitud_agregar_custom.connect(self._on_agregar_custom)
         self.dock_propiedades.geometria_cambiada.connect(self._on_geometria_editada_a_mano)
         self.dock_propiedades.solicitud_clonar.connect(self._on_clonar_desde_panel)
-        self.dock_propiedades.solicitud_eliminar.connect(self._on_marcar_eliminar)
+        self.dock_propiedades.solicitud_eliminar.connect(lambda id_: self._on_eliminar([id_]))
 
     # ── abrir / nueva ──
 
@@ -144,12 +169,48 @@ class MaquetadorWindow(QMainWindow):
         self.dock_recursos.sincronizar_disponibilidad(set())
         self.dock_propiedades.mostrar_recurso(None)
 
+    def _on_editar_margenes(self) -> None:
+        if self.doc is None:
+            QMessageBox.information(self, "Maquetador", "No hay ninguna maqueta cargada.")
+            return
+        mq = self.doc.maqueta
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Márgenes de página")
+        form = QFormLayout(dlg)
+        spins = {}
+        for campo, etiqueta, valor in (
+            ("margin_top_mm", "Superior", mq.margin_top_mm),
+            ("margin_bottom_mm", "Inferior", mq.margin_bottom_mm),
+            ("margin_left_mm", "Izquierdo", mq.margin_left_mm),
+            ("margin_right_mm", "Derecho", mq.margin_right_mm),
+        ):
+            s = QDoubleSpinBox(); s.setRange(0.0, 500.0); s.setValue(valor); s.setSuffix(" mm")
+            form.addRow(etiqueta, s)
+            spins[campo] = s
+        btn = QPushButton("Aplicar")
+        btn.clicked.connect(dlg.accept)
+        form.addRow(btn)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        for campo, spin in spins.items():
+            setattr(mq, campo, spin.value())
+        self.canvas.actualizar_margenes(self.doc)
+
     # ── edición: eventos del canvas ──
 
     def _on_recurso_movido(self, id_: str, left_mm: float, top_mm: float) -> None:
+        """En vivo, en cada micro-paso del arrastre — no pasa por el
+        undo_stack (eso lo hace _on_recurso_movido_fin, una sola vez al
+        soltar). Si el recurso es miembro de un grupo rígido, doc.mover() ya
+        propaga el delta a los hermanos; acá solo hace falta refrescarlos."""
         if self.doc is None or id_ not in self.doc.recursos:
             return
         self.doc.mover(id_, left_mm, top_mm)
+        recurso = self.doc.recursos[id_]
+        if recurso.grupo_id:
+            for miembro in self.doc.miembros_del_grupo(recurso.grupo_id):
+                if miembro.id != id_:
+                    self.canvas.refrescar_item(miembro.id)
 
     def _on_recurso_redimensionado(self, id_: str, width_mm: float, height_mm: float) -> None:
         if self.doc is None or id_ not in self.doc.recursos:
@@ -163,6 +224,16 @@ class MaquetadorWindow(QMainWindow):
         recurso = self.doc.recursos.get(id_) if (self.doc and id_) else None
         self.dock_propiedades.mostrar_recurso(recurso)
 
+    def _on_recurso_movido_fin(self, id_: str, left0: float, top0: float, left1: float, top1: float) -> None:
+        if self.doc is None:
+            return
+        self.undo_stack.push(MoverCommand(self.doc, self.canvas, id_, left0, top0, left1, top1))
+
+    def _on_recurso_redimensionado_fin(self, id_: str, geom0: tuple, geom1: tuple) -> None:
+        if self.doc is None:
+            return
+        self.undo_stack.push(RedimensionarCommand(self.doc, self.canvas, id_, geom0, geom1))
+
     def _on_solicitud_clonar(self, rol: str, left_mm: float, top_mm: float) -> None:
         if self.doc is None:
             return
@@ -173,14 +244,24 @@ class MaquetadorWindow(QMainWindow):
                 "— QuarkXPress no puede crear cajas nuevas desde cero.",
             )
             return
-        try:
-            nuevo = self.doc.clonar_recurso(rol)
-        except ValueError as e:
-            QMessageBox.warning(self, "Maquetador", str(e))
+        # Precondición ya validada arriba (roles_con_repuesto) — clonar_recurso()
+        # no debería lanzar ValueError acá. QUndoCommand.redo() es un método
+        # virtual invocado desde C++ (QUndoStack.push); una excepción Python
+        # ahí NO se propaga como excepción normal a este try/except, así que
+        # la validación real tiene que pasar ANTES de empujar el comando.
+        self.undo_stack.push(ClonarCommand(self.doc, self.canvas, rol, None, left_mm, top_mm))
+
+    def _on_solicitud_clonar_grupo(self, rol_grupo: str, left_mm: float, top_mm: float) -> None:
+        if self.doc is None:
             return
-        self.doc.mover(nuevo.id, left_mm, top_mm)
-        self.canvas.agregar_recurso_nuevo(nuevo)
-        self.canvas.refrescar_item(nuevo.id)
+        if rol_grupo not in self.doc.roles_con_repuesto():
+            QMessageBox.warning(
+                self, "Maquetador",
+                f"No hay ningún repuesto del grupo '{rol_grupo}' en esta maqueta para clonar "
+                "— QuarkXPress no puede crear cajas nuevas desde cero.",
+            )
+            return
+        self.undo_stack.push(ClonarGrupoCommand(self.doc, self.canvas, rol_grupo, left_mm, top_mm))
 
     # ── edición: eventos de los paneles ──
 
@@ -192,29 +273,25 @@ class MaquetadorWindow(QMainWindow):
     def _on_geometria_editada_a_mano(self, id_: str, left: float, top: float, width: float, height: float) -> None:
         if self.doc is None or id_ not in self.doc.recursos:
             return
-        self.doc.mover(id_, left, top)
-        self.doc.redimensionar(id_, width, height)
-        self.canvas.refrescar_item(id_)
+        r = self.doc.recursos[id_]
+        geom0 = (r.left_mm, r.top_mm, r.width_mm, r.height_mm)
+        geom1 = (left, top, width, height)
+        self.undo_stack.push(RedimensionarCommand(self.doc, self.canvas, id_, geom0, geom1))
         self.dock_propiedades.mostrar_recurso(self.doc.recursos[id_])
 
     def _on_clonar_desde_panel(self, id_: str) -> None:
         if self.doc is None or id_ not in self.doc.recursos:
             return
         origen = self.doc.recursos[id_]
-        try:
-            nuevo = self.doc.clonar_recurso(rol=origen.rol, desde_id=id_)
-        except ValueError as e:
-            QMessageBox.warning(self, "Maquetador", str(e))
-            return
-        self.doc.mover(nuevo.id, origen.left_mm + 10.0, origen.top_mm + 10.0)
-        self.canvas.agregar_recurso_nuevo(nuevo)
-        self.canvas.refrescar_item(nuevo.id)
+        self.undo_stack.push(ClonarCommand(
+            self.doc, self.canvas, origen.rol, id_,
+            origen.left_mm + 10.0, origen.top_mm + 10.0,
+        ))
 
-    def _on_marcar_eliminar(self, id_: str, marcado: bool) -> None:
-        if self.doc is None or id_ not in self.doc.recursos:
+    def _on_eliminar(self, ids: list[str]) -> None:
+        if self.doc is None or not ids:
             return
-        self.doc.marcar_eliminar(id_, marcado)
-        self.canvas.refrescar_item(id_)
+        self.undo_stack.push(EliminarCommand(self.doc, self.canvas, self.dock_propiedades, ids))
 
     # ── guardar / plan ──
 

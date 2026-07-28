@@ -13,10 +13,13 @@ from model.maquetador_state import MaquetadorDocumento
 from ui.maquetador.recurso_item import CanvasSignals, PasteboardBoundaryItem, RecursoItem
 
 _PASTEBOARD_MARGIN_MM = 20.0
+_COLOR_MARGEN = QColor(59, 130, 246, 160)  # azul — distingue el margen del pasteboard (gris)
 
 
 class MaquetadorCanvasView(QGraphicsView):
-    solicitud_clonar = pyqtSignal(str, float, float)  # rol, left_mm, top_mm (drop del panel)
+    solicitud_clonar = pyqtSignal(str, float, float)        # rol, left_mm, top_mm (drop del panel)
+    solicitud_clonar_grupo = pyqtSignal(str, float, float)  # rol_grupo, left_mm, top_mm (drop de un recurso-grupo)
+    solicitud_eliminar_seleccion = pyqtSignal(list)         # ids seleccionados (tecla Supr/Backspace)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -24,11 +27,13 @@ class MaquetadorCanvasView(QGraphicsView):
         self.setRenderHint(QPainter.Antialiasing)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._scale_factor = 1.15
         self.signals = CanvasSignals(self)
         self.doc: MaquetadorDocumento | None = None
         self._items: dict[str, RecursoItem] = {}
         self._snap_mm: float | None = None
+        self._margen_item: PasteboardBoundaryItem | None = None
 
     # ── zoom (Ctrl+rueda, mismo patrón que ZoomableGraphicsView) ──
 
@@ -66,11 +71,31 @@ class MaquetadorCanvasView(QGraphicsView):
         pasteboard = PasteboardBoundaryItem(QRectF(-m, -m, ancho + 2 * m, alto + 2 * m))
         scene.addItem(pasteboard)
 
+        self._margen_item = PasteboardBoundaryItem(self._rect_margen(doc), _COLOR_MARGEN)
+        scene.addItem(self._margen_item)
+
         for recurso in doc.recursos.values():
             self._agregar_item(recurso)
 
         scene.setSceneRect(-m - 5, -m - 5, ancho + 2 * m + 10, alto + 2 * m + 10)
         self.fitInView(scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def _rect_margen(self, doc: MaquetadorDocumento) -> QRectF:
+        mq = doc.maqueta
+        ancho, alto = mq.canvas_width_mm or 200.0, mq.canvas_height_mm or 300.0
+        left, top = mq.margin_left_mm, mq.margin_top_mm
+        width = max(0.0, ancho - mq.margin_left_mm - mq.margin_right_mm)
+        height = max(0.0, alto - mq.margin_top_mm - mq.margin_bottom_mm)
+        return QRectF(left, top, width, height)
+
+    def actualizar_margenes(self, doc: MaquetadorDocumento) -> None:
+        """Reposiciona el rect guía de márgenes sin recargar toda la escena
+        (evita perder selección/estado de los RecursoItem ya creados)."""
+        if self._margen_item is None or self._margen_item.scene() is None:
+            self._margen_item = PasteboardBoundaryItem(self._rect_margen(doc), _COLOR_MARGEN)
+            self.scene().addItem(self._margen_item)
+        else:
+            self._margen_item.setRect(self._rect_margen(doc))
 
     def _agregar_item(self, recurso) -> RecursoItem:
         item = RecursoItem(recurso, self.signals)
@@ -98,6 +123,21 @@ class MaquetadorCanvasView(QGraphicsView):
         for id_ in list(self._items):
             self.refrescar_item(id_)
 
+    def quitar_item(self, id_: str) -> None:
+        item = self._items.pop(id_, None)
+        if item is not None and item.scene():
+            item.scene().removeItem(item)
+
+    # ── teclado: Supr/Backspace elimina la selección ──
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            ids = [it.recurso_id for it in self.scene().selectedItems() if isinstance(it, RecursoItem)]
+            if ids:
+                self.solicitud_eliminar_seleccion.emit(ids)
+                return
+        super().keyPressEvent(event)
+
     # ── drag&drop desde el panel de recursos ──
 
     def dragEnterEvent(self, event):
@@ -119,5 +159,9 @@ class MaquetadorCanvasView(QGraphicsView):
             return
         rol = bytes(mime.data("application/x-armadorhuarpe-rol")).decode("utf-8")
         pos_escena = self.mapToScene(event.pos())
-        self.solicitud_clonar.emit(rol, pos_escena.x(), pos_escena.y())
+        from services.maquetador_nomenclatura import ROLES_GRUPO
+        if rol in ROLES_GRUPO:
+            self.solicitud_clonar_grupo.emit(rol, pos_escena.x(), pos_escena.y())
+        else:
+            self.solicitud_clonar.emit(rol, pos_escena.x(), pos_escena.y())
         event.acceptProposedAction()

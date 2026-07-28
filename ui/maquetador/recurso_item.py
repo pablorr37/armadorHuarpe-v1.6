@@ -20,7 +20,6 @@ from model.maquetador_state import RecursoEditable
 
 _COLOR_EN_USO = QColor(30, 41, 59, 170)        # #1e293b, paleta de MaquetaWidget
 _COLOR_PASTEBOARD = QColor(148, 163, 184, 60)  # gris translúcido
-_COLOR_ELIMINAR = QColor(220, 38, 38, 90)      # rojo translúcido
 _COLOR_SELECCION = QColor(59, 130, 246)        # borde azul de selección
 _COLOR_TEXTO = QColor(240, 240, 240)
 
@@ -30,18 +29,24 @@ _MIN_SIZE_MM = 2.0
 
 class CanvasSignals(QObject):
     """Bus de señales compartido por todos los RecursoItem de una escena."""
-    recurso_movido = pyqtSignal(str, float, float)          # id, left_mm, top_mm
-    recurso_redimensionado = pyqtSignal(str, float, float)  # id, width_mm, height_mm
+    recurso_movido = pyqtSignal(str, float, float)          # id, left_mm, top_mm (en vivo, cada micro-paso)
+    recurso_redimensionado = pyqtSignal(str, float, float)  # id, width_mm, height_mm (en vivo, cada micro-paso)
     recurso_seleccionado = pyqtSignal(object)                # id (str) | None
+    # Emitidas UNA sola vez al soltar el mouse (si hubo cambio real) — las
+    # consume MaquetadorWindow para empujar UN comando de undo por arrastre,
+    # en vez de uno por cada micro-paso de recurso_movido/redimensionado.
+    recurso_movido_fin = pyqtSignal(str, float, float, float, float)          # id, left0, top0, left1, top1
+    recurso_redimensionado_fin = pyqtSignal(str, object, object)             # id, geom0, geom1 (left,top,w,h)
 
 
 class PasteboardBoundaryItem(QGraphicsRectItem):
-    """Rectángulo decorativo (no seleccionable) que delimita la zona de
-    repuestos alrededor del área de página."""
+    """Rectángulo decorativo (no seleccionable) que delimita un área guía —
+    la zona de repuestos alrededor de la página (gris) o el área imprimible
+    dentro de los márgenes (azul), según `color`."""
 
-    def __init__(self, rect: QRectF):
+    def __init__(self, rect: QRectF, color: QColor | None = None):
         super().__init__(rect)
-        self.setPen(QPen(QColor(148, 163, 184, 140), 0, Qt.DashLine))
+        self.setPen(QPen(color or QColor(148, 163, 184, 140), 0, Qt.DashLine))
         self.setBrush(QBrush(Qt.NoBrush))
         self.setFlag(QGraphicsItem.ItemIsSelectable, False)
         self.setFlag(QGraphicsItem.ItemIsMovable, False)
@@ -55,9 +60,10 @@ class ResizeHandleItem(QGraphicsRectItem):
 
     SIZE_PX = 7
 
-    def __init__(self, parent_item: "RecursoItem", corner: str):
+    def __init__(self, parent_item: "RecursoItem", corner: str, signals: CanvasSignals):
         super().__init__(parent_item)
         self._corner = corner
+        self._signals = signals
         self._dragging = False
         self._start_scene = None
         self._start_geom = None
@@ -123,6 +129,12 @@ class ResizeHandleItem(QGraphicsRectItem):
 
     def mouseReleaseEvent(self, event):
         self._dragging = False
+        if self._start_geom is not None:
+            item = self.parentItem()
+            geom1 = (item.pos().x(), item.pos().y(), item.rect().width(), item.rect().height())
+            if any(abs(a - b) > 0.01 for a, b in zip(self._start_geom, geom1)):
+                self._signals.recurso_redimensionado_fin.emit(item.recurso_id, self._start_geom, geom1)
+            self._start_geom = None
         event.accept()
 
 
@@ -144,6 +156,7 @@ class RecursoItem(QGraphicsRectItem):
             | QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
+        self._drag_start: tuple[float, float] | None = None
 
         self._label = QGraphicsSimpleTextItem(self)
         self._label.setBrush(QBrush(_COLOR_TEXTO))
@@ -155,10 +168,7 @@ class RecursoItem(QGraphicsRectItem):
     # ── estilo / etiqueta ──
 
     def actualizar_estilo(self, recurso: RecursoEditable) -> None:
-        if recurso.marcado_eliminar:
-            self.setBrush(QBrush(_COLOR_ELIMINAR))
-            self.setPen(QPen(QColor(220, 38, 38), 1, Qt.DashLine))
-        elif recurso.en_pasteboard:
+        if recurso.en_pasteboard:
             self.setBrush(QBrush(_COLOR_PASTEBOARD))
             self.setPen(QPen(QColor(148, 163, 184), 1, Qt.DashLine))
         else:
@@ -168,8 +178,7 @@ class RecursoItem(QGraphicsRectItem):
         texto = recurso.rol or recurso.id
         if recurso.tipo == "text" and recurso.capacidad:
             texto += f"\n{recurso.capacidad} car."
-        tachado = " (eliminar)" if recurso.marcado_eliminar else ""
-        self._label.setText(texto + tachado)
+        self._label.setText(texto)
 
     def sync_geometria(self, recurso: RecursoEditable) -> None:
         """Refleja en el item una geometría cambiada externamente (p. ej. el
@@ -184,7 +193,7 @@ class RecursoItem(QGraphicsRectItem):
     def _crear_handles(self) -> None:
         if self._handles:
             return
-        self._handles = [ResizeHandleItem(self, c) for c in _CORNERS]
+        self._handles = [ResizeHandleItem(self, c, self._signals) for c in _CORNERS]
         for h in self._handles:
             h.reposicionar()
 
@@ -204,6 +213,20 @@ class RecursoItem(QGraphicsRectItem):
         self._signals.recurso_redimensionado.emit(self.recurso_id, width_mm, height_mm)
 
     # ── mouse / selección / mover ──
+
+    def mousePressEvent(self, event):
+        self._drag_start = (self.pos().x(), self.pos().y())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self._drag_start is None:
+            return
+        left0, top0 = self._drag_start
+        self._drag_start = None
+        left1, top1 = self.pos().x(), self.pos().y()
+        if abs(left1 - left0) > 0.01 or abs(top1 - top0) > 0.01:
+            self._signals.recurso_movido_fin.emit(self.recurso_id, left0, top0, left1, top1)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange and self.snap_mm:

@@ -112,7 +112,11 @@
       out.boxes.push(box);
     }
 
-    // Tamaño del lienzo (página). Intentos varios; el que exista.
+    // Tamaño del lienzo (página) + márgenes. Intentos varios; el que exista.
+    // Márgenes: PENDIENTE DE VALIDAR EN VIVO — nombres de propiedad tentativos
+    // (--qx-margin-* / marginTop..) no confirmados contra Quark real todavía.
+    // Si no se puede leer, quedan en null y el lado Python decide el default
+    // (0mm, editable a mano en el maquetador).
     try {
       var pageEl = layout.getElementsByTagName("qx-page")[0]
                 || layout.querySelector("qx-page");
@@ -120,14 +124,32 @@
         var ps = pageEl.getAttribute("style") || "";
         out.canvas = {
           width_mm: num(ps, "page-width") || num(ps, "width"),
-          height_mm: num(ps, "page-height") || num(ps, "height")
+          height_mm: num(ps, "page-height") || num(ps, "height"),
+          margin_top_mm: num(ps, "margin-top"),
+          margin_bottom_mm: num(ps, "margin-bottom"),
+          margin_left_mm: num(ps, "margin-left"),
+          margin_right_mm: num(ps, "margin-right")
         };
       }
     } catch (e) {}
     if (!out.canvas) {
       try {
         var lay = app.activeLayout();
-        out.canvas = { width_mm: lay.pageWidth || null, height_mm: lay.pageHeight || null };
+        out.canvas = {
+          width_mm: lay.pageWidth || null, height_mm: lay.pageHeight || null,
+          margin_top_mm: lay.marginTop || null, margin_bottom_mm: lay.marginBottom || null,
+          margin_left_mm: lay.marginLeft || null, margin_right_mm: lay.marginRight || null
+        };
+      } catch (e) {}
+    } else if (out.canvas.margin_top_mm == null) {
+      // El bloque de qx-page resolvió tamaño pero no márgenes — intentar el
+      // fallback de activeLayout() SOLO para los márgenes.
+      try {
+        var lay2 = app.activeLayout();
+        out.canvas.margin_top_mm = lay2.marginTop || null;
+        out.canvas.margin_bottom_mm = lay2.marginBottom || null;
+        out.canvas.margin_left_mm = lay2.marginLeft || null;
+        out.canvas.margin_right_mm = lay2.marginRight || null;
       } catch (e) {}
     }
   } catch (err) {

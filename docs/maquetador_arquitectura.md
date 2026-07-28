@@ -233,6 +233,33 @@ maqueta de prueba activa para no arriesgar una mutación no solicitada.
   futura extensión de Chrome quedaron fuera, a definir en un ciclo posterior.
   Tests headless en `tests/test_maquetador_state.py` (fixture de manifest, sin
   depender de Quark ni de la caché real).
+- **F3+F4 (ampliación) — márgenes, undo/redo real y nomenclatura semántica** ✅
+  jul 2026: (1) Márgenes de página editables — lectura best-effort por CDP en
+  `LeerMaquetaCDP.js` (`margin_top/bottom/left/right_mm`, **pendiente de
+  validar en vivo**, default 0mm si Quark no expone el dato), 4 campos nuevos
+  en `Maqueta`, acción "Márgenes…" en `MaquetadorWindow` + rect guía azul en
+  el canvas (`actualizar_margenes`, sin recargar la escena). (2) Undo/redo real
+  con `QUndoStack`/`QUndoCommand` (`ui/maquetador/undo_commands.py` — primera
+  vez que se usa en el repo; `story_panel.py` tiene un patrón custom de listas
+  pero es para edición de texto, no para operaciones estructuradas) — Ctrl+Z/
+  Ctrl+Y, y Supr elimina un recurso DIRECTAMENTE (se quitó el soft-delete
+  `marcado_eliminar`). Simplificación resultante: `MaquetadorDocumento.a_objetivos()`
+  infiere el borrado por diferencia de conjuntos (`ids del manifest_original`
+  − `ids actuales en doc.recursos`), sin ningún flag. El drag se captura como
+  UN solo comando por arrastre (señales `recurso_movido_fin`/
+  `recurso_redimensionado_fin` en `mouseReleaseEvent`, separadas de las señales
+  en vivo que siguen actualizando capacidad/posición en cada micro-paso). (3)
+  Nomenclatura semántica determinística `rol_N`/`textual_N_campo`
+  (`services/maquetador_nomenclatura.py`) — SOLO para maquetas construidas
+  desde cero con el maquetador (ej. `maquetas/listas/vaciaGenerica_test.qxp`),
+  fallback puro en `construir_manifest` cuando `maqueta_roles.json` no
+  resuelve nada (nunca reemplaza el mapeo estático de producción). "textual"/
+  "dato"/"numero"/"qr" son recursos-grupo rígidos (mismo mecanismo que
+  `RECURSO_GRUPO`/`moverGrupo` de `PegarNota v6.js`): sus cajas se clonan y se
+  mueven siempre juntas (`RecursoEditable.grupo_id`/`grupo_campo`,
+  `MaquetadorDocumento.clonar_recurso_compuesto`/`mover` propaga el delta a
+  todo el grupo). Nombres de campo de dato/numero/qr son **placeholders
+  genéricos** (`campo_1..N`) — pendiente de que el usuario confirme los reales.
 - **F5 — Migración gradual de PegarNota_JSON.js** (fuera de alcance de este
   ciclo, alto riesgo): reemplazar `UNIVERSAL`/`AVISO_TARGETS`/rutinas por
   sección por el manifest único, sección por sección, con la producción

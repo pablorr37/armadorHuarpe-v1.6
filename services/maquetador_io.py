@@ -48,6 +48,10 @@ def cargar_desde_cache(stem: str, pagina: Optional[str] = None) -> Optional[Maqu
         canvas_height_mm=canvas.get("height_mm") or 0.0,
         origen="real",
         source=None,
+        margin_top_mm=canvas.get("margin_top_mm") or 0.0,
+        margin_bottom_mm=canvas.get("margin_bottom_mm") or 0.0,
+        margin_left_mm=canvas.get("margin_left_mm") or 0.0,
+        margin_right_mm=canvas.get("margin_right_mm") or 0.0,
     )
 
     manifest_filtrado = manifest
@@ -61,7 +65,11 @@ def cargar_desde_cache(stem: str, pagina: Optional[str] = None) -> Optional[Maqu
     return MaquetadorDocumento.desde_manifest(maqueta, manifest_filtrado)
 
 
-def cargar_en_blanco(nombre: str, ancho_mm: float, alto_mm: float) -> MaquetadorDocumento:
+def cargar_en_blanco(
+    nombre: str, ancho_mm: float, alto_mm: float,
+    margin_top_mm: float = 0.0, margin_bottom_mm: float = 0.0,
+    margin_left_mm: float = 0.0, margin_right_mm: float = 0.0,
+) -> MaquetadorDocumento:
     """Origen 'dibujar': lienzo vacío, sin ningún .qxp de referencia. Solo
     permite definir el lienzo y anotar qué recursos debería tener la maqueta
     (agregar_recurso_custom) — no puede materializar cajas nuevas porque
@@ -70,8 +78,18 @@ def cargar_en_blanco(nombre: str, ancho_mm: float, alto_mm: float) -> Maquetador
     maqueta = Maqueta(
         nombre=nombre, canvas_width_mm=ancho_mm, canvas_height_mm=alto_mm,
         origen="dibujar", source=None,
+        margin_top_mm=margin_top_mm, margin_bottom_mm=margin_bottom_mm,
+        margin_left_mm=margin_left_mm, margin_right_mm=margin_right_mm,
     )
-    manifest = {"maqueta": nombre, "canvas": {"width_mm": ancho_mm, "height_mm": alto_mm}, "recursos": []}
+    manifest = {
+        "maqueta": nombre,
+        "canvas": {
+            "width_mm": ancho_mm, "height_mm": alto_mm,
+            "margin_top_mm": margin_top_mm, "margin_bottom_mm": margin_bottom_mm,
+            "margin_left_mm": margin_left_mm, "margin_right_mm": margin_right_mm,
+        },
+        "recursos": [],
+    }
     return MaquetadorDocumento.desde_manifest(maqueta, manifest)
 
 
@@ -95,7 +113,11 @@ def guardar_como_maqueta(doc: MaquetadorDocumento, nombre: str):
         })
     data = {
         "boxes": boxes,
-        "canvas": {"width_mm": doc.maqueta.canvas_width_mm, "height_mm": doc.maqueta.canvas_height_mm},
+        "canvas": {
+            "width_mm": doc.maqueta.canvas_width_mm, "height_mm": doc.maqueta.canvas_height_mm,
+            "margin_top_mm": doc.maqueta.margin_top_mm, "margin_bottom_mm": doc.maqueta.margin_bottom_mm,
+            "margin_left_mm": doc.maqueta.margin_left_mm, "margin_right_mm": doc.maqueta.margin_right_mm,
+        },
         "source": doc.maqueta.source,
         "editor_origen": "maquetador",
     }
