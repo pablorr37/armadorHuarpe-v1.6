@@ -172,20 +172,53 @@ def resolve_maqueta(aviso_full: bool, aviso_half: bool, aviso_footer: bool,
     return resolve_maqueta_name(tipo, seccion or "", d)
 
 
+def _templates_solo_cache(reales: list[str]) -> list[str]:
+    """Stems guardados desde el maquetador ("Guardar en el pool…",
+    editor_origen="maquetador") que todavía no tienen un .qxp real en disco
+    (Quark no crea cajas/documentos por sí solo sin autorización explícita).
+    Se listan SIN extensión ".qxp" — esa ausencia es la señal de "maqueta del
+    pool, sin .qxp todavía"; no se decora el texto con sufijos ("(maquetador,
+    sin .qxp)") porque el combo del editor de notas usa currentText() tal
+    cual como identificador en varios puntos (limits_from_cache,
+    maqueta_config_for, etc.) — todos ya toleran un nombre sin ".qxp"."""
+    try:
+        from services.maqueta_introspect import leer_cache
+    except Exception:
+        return []
+    nombres_reales = {_normalizar(t.replace(".qxp", "")) for t in reales}
+    stems = []
+    for stem, entry in leer_cache().items():
+        if (entry.get("data") or {}).get("editor_origen") != "maquetador":
+            continue
+        if _normalizar(stem) in nombres_reales:
+            continue
+        stems.append(stem)
+    return sorted(stems)
+
+
 def get_templates() -> list[str]:
     d = _override_maquetas_dir or _get_maquetas_dir()
-    if not d.exists():
-        return []
-    return sorted(p.name for p in d.glob("*.qxp"))
+    reales = sorted(p.name for p in d.glob("*.qxp")) if d.exists() else []
+    return reales + _templates_solo_cache(reales)
 
 
 def get_templates_for_page(pagina) -> list[str]:
     """
-    Filtra las maquetas según sección y tipo de aviso de la página.
-    Devuelve lista ordenada; si el filtro da vacío devuelve todas.
+    Filtra las maquetas reales (con .qxp) según tipo de aviso de la página
+    (ya no por sección — un .qxp con sufijo no estándar, ej. "vaciaGenerica_test",
+    quedaba afuera en cuanto la página tenía una sección real asignada; ahora
+    el operador ve todas las del tipo de aviso correspondiente y elige a mano).
+    Las maquetas solo-caché del maquetador (sin .qxp, ver _templates_solo_cache)
+    se agregan SIEMPRE al final, sin filtrar por tipo de aviso — el objetivo es
+    poder probarlas sin importar si el nombre sigue la convención {tipo}{sección}.
     """
     all_tpls = get_templates()
     if not all_tpls or pagina is None:
+        return all_tpls
+
+    reales = [t for t in all_tpls if t.endswith(".qxp")]
+    solo_cache = [t for t in all_tpls if not t.endswith(".qxp")]
+    if not reales:
         return all_tpls
 
     # Determine valid ad prefixes
@@ -202,36 +235,20 @@ def get_templates_for_page(pagina) -> list[str]:
     else:
         ad_prefixes = _AD_PREFIXES["none"]
 
-    # Determine valid section suffixes (None = no restriction, show all)
-    seccion_norm = _normalizar(getattr(pagina, "seccion", "") or "")
-    section_suffix = _SECTION_SUFFIX_MAP.get(seccion_norm)
-    # Only restrict by section when a recognised non-generic section is assigned
-    restrict_section = section_suffix is not None
-    # Comparación normalizada (case/acentos): el sufijo del archivo real puede
-    # diferir del CamelCase del mapa (ej. 'Cafédelapolítica' vs 'CaféDeLaPolítica').
-    valid_norm = ({_normalizar("Generica"), _normalizar(section_suffix)}
-                  if restrict_section else set())
-
-    result = []
-    for tpl in all_tpls:
-        stem = tpl.replace(".qxp", "")
-        matched = next((p for p in ad_prefixes if stem.lower().startswith(p)), None)
-        if matched is None:
-            continue
-        suffix = stem[len(matched):]    # e.g. "Cultura", "Generica", ""
-        if not suffix:
-            result.append(tpl)          # "completa.qxp" — no section suffix
-        elif not restrict_section or _normalizar(suffix) in valid_norm:
-            result.append(tpl)
+    result = [
+        tpl for tpl in reales
+        if any(tpl.replace(".qxp", "").lower().startswith(p) for p in ad_prefixes)
+    ]
 
     # Maqueta especial de la sección (no sigue el patrón {tipo}{sufijo}): incluirla.
+    seccion_norm = _normalizar(getattr(pagina, "seccion", "") or "")
     especial = _SECCION_MAQUETA_ESPECIAL.get(seccion_norm)
     if especial:
-        for tpl in all_tpls:
+        for tpl in reales:
             if _normalizar(tpl.replace(".qxp", "")) == _normalizar(especial) and tpl not in result:
                 result.append(tpl)
 
-    return result if result else all_tpls
+    return (result if result else reales) + solo_cache
 
 
 def read_maqueta_info() -> dict | None:
